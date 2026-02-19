@@ -4,11 +4,11 @@ WORKDIR /build
 
 # Copy package files for Vue frontend
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm install --ignore-engines
 
-# Copy Vue source and build
+# Copy Vue source and build (skip type-check — belongs in CI, not prod builds)
 COPY . .
-RUN npm run build
+RUN npm run build-only
 
 # ── Production image ──
 FROM node:20-alpine
