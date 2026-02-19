@@ -173,9 +173,10 @@ start_setup() {
     exit 1
   fi
 
-  # Build
-  if ! $COMPOSE_CMD --profile setup build onetime_setup 2>&1 | tail -10; then
-    log_error "Docker build failed. Check the output above."
+  # Build with full output so errors are visible
+  if ! DOCKER_BUILDKIT=1 $COMPOSE_CMD --profile setup build --progress=plain onetime_setup; then
+    log_error "Docker build failed. Check the full output above."
+    log_error "To retry: cd $PROJECT_DIR && docker compose --profile setup build --progress=plain --no-cache onetime_setup"
     exit 1
   fi
 
@@ -188,12 +189,31 @@ start_setup() {
 
   # Wait for the container to be ready
   log_info "Waiting for setup wizard to start..."
-  for i in $(seq 1 30); do
+  local ready=false
+  for i in $(seq 1 20); do
+    # Check if container is still running
+    if ! docker inspect -f '{{.State.Running}}' onetime_setup 2>/dev/null | grep -q true; then
+      log_error "Container 'onetime_setup' exited unexpectedly."
+      log_error "Container logs:"
+      docker logs onetime_setup 2>&1 | tail -30
+      echo ""
+      log_error "To retry: cd $PROJECT_DIR && docker compose --profile setup up onetime_setup"
+      exit 1
+    fi
+    # Check if the health endpoint responds
     if curl -s "http://localhost:9090/api/health" &>/dev/null; then
+      ready=true
       break
     fi
     sleep 2
   done
+
+  if [ "$ready" != "true" ]; then
+    log_warn "Setup wizard did not respond within 40 seconds."
+    log_info "Container logs:"
+    docker logs onetime_setup 2>&1 | tail -20
+    log_info "The container may still be starting. Check: docker logs onetime_setup"
+  fi
 }
 
 # ── Print Access URL ──

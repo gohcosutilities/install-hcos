@@ -12,9 +12,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - .:/project
-    working_dir: /project
     environment:
-      - PROJECT_DIR=/project
+      - BASE_DIR=/project
     networks:
       - keycloak_internal
     profiles:
