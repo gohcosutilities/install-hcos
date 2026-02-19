@@ -1,0 +1,32 @@
+FROM node:20-alpine AS frontend-build
+
+WORKDIR /build
+
+# Copy package files for Vue frontend
+COPY package.json package-lock.json* ./
+RUN npm install
+
+# Copy Vue source and build
+COPY . .
+RUN npm run build
+
+# ── Production image ──
+FROM node:20-alpine
+
+RUN apk add --no-cache git curl bash docker-cli
+
+WORKDIR /app
+
+# Copy server files
+COPY server/package.json server/server.js ./server/
+
+# Copy built Vue3 frontend from build stage
+COPY --from=frontend-build /build/dist ./dist/
+
+# Install server dependencies
+WORKDIR /app/server
+RUN npm install --production
+
+EXPOSE 9090
+
+CMD ["node", "server.js"]
