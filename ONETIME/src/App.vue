@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useSetupStore } from '@/stores/setup'
 import { SECTIONS, type SectionKey } from '@/types'
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import DeploymentProgress from '@/components/DeploymentProgress.vue'
 import DeploymentSection from '@/components/sections/DeploymentSection.vue'
@@ -73,6 +73,42 @@ function nextSection() {
 onMounted(() => {
   store.detectIp()
 })
+
+// ── JSON Import / Export ──
+const fileInput = ref<HTMLInputElement | null>(null)
+
+function handleExport() {
+  const json = store.exportConfig()
+  const blob = new Blob([json], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'hcos-config.json'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+function triggerImport() {
+  fileInput.value?.click()
+}
+
+function handleImport(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    try {
+      const json = JSON.parse(reader.result as string)
+      store.importConfig(json)
+      console.log('[CONFIG] Imported config from', file.name)
+    } catch (err) {
+      alert('Invalid JSON file: ' + (err as Error).message)
+    }
+  }
+  reader.readAsText(file)
+  // Reset so the same file can be re-imported
+  ;(e.target as HTMLInputElement).value = ''
+}
 </script>
 
 <template>
@@ -97,6 +133,13 @@ onMounted(() => {
             transform="rotate(-90 40 40)" />
         </svg>
         <span class="progress-text">{{ progress }}%</span>
+      </div>
+
+      <!-- JSON Import / Export -->
+      <div class="config-actions">
+        <button class="config-btn" @click="triggerImport" title="Import config JSON">📥 Import</button>
+        <button class="config-btn" @click="handleExport" title="Export config JSON">📤 Export</button>
+        <input ref="fileInput" type="file" accept=".json" style="display:none" @change="handleImport" />
       </div>
 
       <nav class="nav-sections">
@@ -152,8 +195,8 @@ onMounted(() => {
       </footer>
     </main>
 
-    <!-- Deployment progress overlay -->
-    <DeploymentProgress v-if="store.deploying" />
+    <!-- Deployment progress overlay (stays visible for error/complete states) -->
+    <DeploymentProgress v-if="store.showDeployModal" />
   </div>
 </template>
 
@@ -224,6 +267,16 @@ input, select, textarea, button { font-family: inherit; }
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   font-size: 14px; font-weight: 700; color: var(--text-heading);
 }
+
+.config-actions {
+  display: flex; gap: 6px; padding: 0 12px 12px; justify-content: center;
+}
+.config-btn {
+  flex: 1; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: transparent; color: var(--text-muted); cursor: pointer;
+  font-size: 11px; font-weight: 600; transition: all 0.15s; text-align: center;
+}
+.config-btn:hover { border-color: var(--primary); color: var(--primary); background: rgba(59, 130, 246, 0.08); }
 
 .nav-sections {
   flex: 1; overflow-y: auto; padding: 8px;

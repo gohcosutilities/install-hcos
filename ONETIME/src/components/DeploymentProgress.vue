@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useSetupStore } from '@/stores/setup'
-import { computed, ref, onUpdated, nextTick } from 'vue'
+import { computed, ref, onUpdated, nextTick, watch } from 'vue'
 
 const store = useSetupStore()
 const logContainer = ref<HTMLElement | null>(null)
@@ -23,8 +23,13 @@ onUpdated(() => {
   })
 })
 
+// Debug: log every status change to the browser console
+watch(status, (val) => {
+  console.log('[DeploymentProgress] status changed:', val.phase, val.message, `error:${val.error}`, `complete:${val.complete}`, `logs:${val.log?.length}`)
+}, { deep: true })
+
 function dismiss() {
-  store.deploying = false
+  store.dismissDeploy()
 }
 </script>
 
