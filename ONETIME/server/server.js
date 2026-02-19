@@ -12,6 +12,20 @@ const app = express();
 const PORT = process.env.ONETIME_PORT || 9090;
 const BASE_DIR = process.env.BASE_DIR || '/opt/hcos_stack';
 
+// Auto-detect docker compose command (v2 plugin vs v1 standalone)
+let COMPOSE_CMD = 'docker compose';
+try {
+  execSync('docker compose version', { stdio: 'pipe' });
+} catch {
+  try {
+    execSync('docker-compose version', { stdio: 'pipe' });
+    COMPOSE_CMD = 'docker-compose';
+  } catch {
+    console.warn('[WARN] Neither "docker compose" nor "docker-compose" found');
+  }
+}
+console.log(`[INFO] Using compose command: ${COMPOSE_CMD}`);
+
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
 
@@ -160,8 +174,8 @@ async function runDeployment(config) {
   deploymentStatus.message = 'Starting Docker stack (this may take several minutes)…';
   appendLog('Phase 8: docker compose up');
 
-  run('docker compose down 2>/dev/null || true', { allowFailure: true });
-  run('docker compose up -d --build', { timeout: 600000 });
+  run(`${COMPOSE_CMD} down 2>/dev/null || true`, { allowFailure: true });
+  run(`${COMPOSE_CMD} up -d --build`, { timeout: 600000 });
 
   // ── Phase 9: Run Django migrations ──
   deploymentStatus.phase = 'migrations';
@@ -169,9 +183,9 @@ async function runDeployment(config) {
   appendLog('Phase 9: Django migrations');
 
   await new Promise(r => setTimeout(r, 15000));  // wait for services
-  run('docker compose exec -T backend python manage.py migrate --noinput', { allowFailure: true });
-  run('docker compose exec -T backend python manage.py create_base_products', { allowFailure: true });
-  run('docker compose exec -T backend python manage.py collectstatic --noinput', { allowFailure: true });
+  run(`${COMPOSE_CMD} exec -T backend python manage.py migrate --noinput`, { allowFailure: true });
+  run(`${COMPOSE_CMD} exec -T backend python manage.py create_base_products`, { allowFailure: true });
+  run(`${COMPOSE_CMD} exec -T backend python manage.py collectstatic --noinput`, { allowFailure: true });
 
   // ── Phase 10: Configure host Nginx ──
   deploymentStatus.phase = 'host-nginx';
@@ -306,7 +320,11 @@ function cloneRepositories(config) {
       run(`rm -rf "${fullPath}"`, { cwd: '/' });
     }
 
-    const authUrl = repo.url.replace('https://', `https://${githubUser}:${githubToken}@`);
+    // Use x-access-token as username for PAT auth (avoids issues with @ in emails)
+    // URL-encode both user and token to handle special characters
+    const safeUser = encodeURIComponent(githubUser || 'x-access-token');
+    const safeToken = encodeURIComponent(githubToken);
+    const authUrl = repo.url.replace('https://', `https://${safeUser}:${safeToken}@`);
     appendLog(`Cloning ${repo.url} → ${folder}`);
     run(`git clone "${authUrl}" "${fullPath}"`, { cwd: '/', timeout: 120000 });
   }

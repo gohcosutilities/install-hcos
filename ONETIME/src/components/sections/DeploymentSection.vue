@@ -74,7 +74,7 @@ store.detectIp()
     <div class="card">
       <h3 class="card-title">GitHub Credentials</h3>
       <p class="card-desc">GitHub expects a Token as password when cloning private repositories.</p>
-      <TextInput v-model="c.githubUser" label="GitHub Username / Email" placeholder="user@example.com" required />
+      <TextInput v-model="c.githubUser" label="GitHub Username" placeholder="gohcosutilities" help-text="Your GitHub username (not email). Used for repo authentication with the token below." required />
       <PasswordInput v-model="c.githubToken" label="GitHub Token" placeholder="ghp_..." required />
     </div>
 
