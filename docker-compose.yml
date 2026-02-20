@@ -1,23 +1,21 @@
 services:
   # ── ONETIME Setup Wizard ──
-  # Runs once on first deployment to configure everything via a web UI.
-  # After deployment completes, this container exits and is not needed again.
-  onetime_setup:
-    build:
-      context: ./ONETIME
-      dockerfile: server/Dockerfile
-    container_name: onetime_setup
-    ports:
-      - "9090:9090"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - .:/project
-    environment:
-      - BASE_DIR=/project
-    networks:
-      - keycloak_internal
-    profiles:
-      - setup
+  # NOTE: The setup UI is launched by install.sh via "docker run" instead
+  # of docker compose, so it has its own lifecycle. This service definition
+  # is kept only as a reference / fallback but is NOT used in normal flow.
+  # onetime_setup:
+  #   build:
+  #     context: ./ONETIME
+  #     dockerfile: server/Dockerfile
+  #   container_name: hcos_setup_ui
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - /opt/hcos_stack:/project
+  #   environment:
+  #     - PROJECT_DIR=/project
+  #   profiles:
+  #     - setup
 
   postgres:
     image: postgres:14-alpine
