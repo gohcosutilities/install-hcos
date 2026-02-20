@@ -9,8 +9,6 @@ RUN npm install --ignore-engines
 # Copy Vue source and build (skip type-check — belongs in CI, not prod builds)
 COPY . .
 RUN npm run build-only
-RUN apk add --no-cache docker-cli-compose
-
 
 # ── Production image (lightweight — no docker/git/certbot needed) ──
 FROM node:20-alpine
