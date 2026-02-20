@@ -10,7 +10,7 @@ const phasePercentage = computed(() => {
   const phases: Record<string, number> = {
     idle: 0, starting: 5, writing_env: 10, cloudflare_creds: 15,
     cloning: 25, ssl: 40, dns: 50, nginx: 60,
-    docker_compose: 70, docker_up: 80, migrations: 90, host_nginx: 95, complete: 100, error: 0,
+    docker_compose: 70, docker_up: 80, migrations: 95, complete: 100, error: 0,
   }
   return phases[status.value.phase] ?? 50
 })

@@ -189,13 +189,6 @@ install_prerequisites() {
     fi
     echo -e "${GREEN}✓ Certbot $(certbot --version 2>&1 | tail -1)${NC}"
 
-    # Nginx (host-level reverse proxy)
-    if ! command -v nginx &>/dev/null; then
-        echo -e "${YELLOW}Installing Nginx...${NC}"
-        $PKG_INSTALL nginx 2>/dev/null || true
-    fi
-    echo -e "${GREEN}✓ Nginx installed${NC}"
-
     # Detect public IP and save for the UI
     echo -e "${YELLOW}Detecting public IP...${NC}"
     local ip=""
@@ -1098,6 +1091,12 @@ phase_docker_up() {
     # Stop existing stack
     run_cmd "$COMPOSE_CMD down 2>/dev/null || true" "true"
 
+    # Ensure host Nginx is stopped so it doesn't conflict with container Nginx on ports 80/443
+    if command -v systemctl &>/dev/null; then
+        systemctl stop nginx 2>/dev/null || true
+        systemctl disable nginx 2>/dev/null || true
+    fi
+
     # Build and start
     update_status "docker_up" "Building and starting containers..."
     run_cmd "$COMPOSE_CMD up -d --build" "false" || {
@@ -1121,145 +1120,6 @@ phase_migrations() {
     update_status "migrations" "Phase 9: Migrations complete"
 }
 
-phase_host_nginx() {
-    update_status "host_nginx" "Phase 10: Configuring host Nginx..."
-
-    if ! command -v nginx &>/dev/null; then
-        update_status "host_nginx" "Phase 10: Host Nginx not installed — container Nginx handles traffic"
-        return 0
-    fi
-
-    local primary_domain
-    primary_domain=$(jq -r '.deployment.backendDomains[0] // "example.com"' "$CONFIG_FILE")
-
-    # Generate host nginx config that proxies to container nginx
-    local host_conf="/etc/nginx/sites-available/hcos_proxy"
-    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
-
-    local server_blocks=""
-
-    # Backend subdomains
-    local backend_domains
-    backend_domains=$(jq -r '.deployment.backendDomains // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
-    for root_domain in $backend_domains; do
-        local cert_path="/etc/letsencrypt/live/$root_domain/fullchain.pem"
-        local key_path="/etc/letsencrypt/live/$root_domain/privkey.pem"
-
-        local subs
-        subs=$(jq -r ".deployment.backendSubdomains[\"$root_domain\"] // [] | .[]" "$CONFIG_FILE" 2>/dev/null)
-        for sub in $subs; do
-            server_blocks+="
-server {
-    listen 443 ssl http2;
-    server_name ${sub}.${root_domain};
-    ssl_certificate $cert_path;
-    ssl_certificate_key $key_path;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    location / {
-        proxy_pass https://127.0.0.1:443;
-        proxy_ssl_verify off;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \"upgrade\";
-        proxy_connect_timeout 300s;
-        proxy_send_timeout 300s;
-        proxy_read_timeout 300s;
-    }
-}
-"
-        done
-
-        # Keycloak
-        server_blocks+="
-server {
-    listen 443 ssl http2;
-    server_name key.${root_domain};
-    ssl_certificate $cert_path;
-    ssl_certificate_key $key_path;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    location / {
-        proxy_pass https://127.0.0.1:443;
-        proxy_ssl_verify off;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \"upgrade\";
-    }
-}
-"
-    done
-
-    # Frontend domains
-    local fe_count
-    fe_count=$(jq '.deployment.frontendDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
-    for ((i=0; i<fe_count; i++)); do
-        local fe_domain
-        fe_domain=$(jq -r ".deployment.frontendDomains[$i].domain" "$CONFIG_FILE")
-
-        # Find matching cert
-        local cert_path="" key_path=""
-        for root_domain in $backend_domains; do
-            if [[ "$fe_domain" == *"$root_domain" ]]; then
-                cert_path="/etc/letsencrypt/live/$root_domain/fullchain.pem"
-                key_path="/etc/letsencrypt/live/$root_domain/privkey.pem"
-                break
-            fi
-        done
-        if [[ -z "$cert_path" && -f "/etc/letsencrypt/live/$fe_domain/fullchain.pem" ]]; then
-            cert_path="/etc/letsencrypt/live/$fe_domain/fullchain.pem"
-            key_path="/etc/letsencrypt/live/$fe_domain/privkey.pem"
-        fi
-        if [[ -z "$cert_path" ]]; then continue; fi
-
-        server_blocks+="
-server {
-    listen 443 ssl http2;
-    server_name ${fe_domain};
-    ssl_certificate $cert_path;
-    ssl_certificate_key $key_path;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    location / {
-        proxy_pass https://127.0.0.1:443;
-        proxy_ssl_verify off;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-    }
-}
-"
-    done
-
-    # HTTP redirect
-    server_blocks+="
-server {
-    listen 80;
-    server_name _;
-    return 301 https://\$host\$request_uri;
-}
-"
-
-    echo "$server_blocks" > "$host_conf"
-    ln -sf "$host_conf" /etc/nginx/sites-enabled/hcos_proxy
-    rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
-
-    # Test and reload
-    if nginx -t 2>&1; then
-        systemctl restart nginx
-        systemctl enable nginx
-        update_status "host_nginx" "Phase 10: Host Nginx configured and started"
-    else
-        update_status "host_nginx" "Phase 10: WARNING — Nginx config test failed (check manually)"
-    fi
-}
-
 # ═══════════════════════════════════════════════
 #  STEP 4: RUN ALL DEPLOYMENT PHASES
 # ═══════════════════════════════════════════════
@@ -1277,7 +1137,6 @@ run_deployment() {
     phase_docker_compose   || { update_status "error" "Deployment failed at Phase 7: Compose" "true"; return 1; }
     phase_docker_up        || { update_status "error" "Deployment failed at Phase 8: Docker" "true"; return 1; }
     phase_migrations       || { update_status "error" "Deployment failed at Phase 9: Migrations" "true"; return 1; }
-    phase_host_nginx       || { update_status "error" "Deployment failed at Phase 10: Host Nginx" "true"; return 1; }
 
     update_status "complete" "Deployment complete! All services are running." "false" "true"
 }
