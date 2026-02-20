@@ -575,6 +575,62 @@ phase_clone_repos() {
             update_status "cloning" "FATAL: Failed to clone $folder" "true"
             return 1
         }
+
+        # ── Flatten nested repo structure ──
+        # Some repos (e.g. HCOS-V8.0) contain the project in a subfolder
+        # (e.g. HCOS-V8.0/BACKEND-API-HCOM/Dockerfile). Detect this and
+        # move the inner folder contents up to the clone root.
+        # For backend: manage.py is the definitive Django marker. A repo
+        # root may have a stub Dockerfile (2 bytes) while the real one
+        # lives in a subfolder.
+        if [[ "$repo_type" == "backend" && ! -f "$full_path/manage.py" ]]; then
+            # Look for a subfolder that contains manage.py (Django project root)
+            local inner=""
+            for candidate in "$full_path"/*/; do
+                if [[ -f "${candidate}manage.py" ]]; then
+                    inner="$candidate"
+                    break
+                fi
+            done
+            if [[ -n "$inner" ]]; then
+                update_status "cloning" "  Flattening nested backend: $(basename "$inner") → $folder"
+                local tmp_dir="${full_path}.__tmp_flatten"
+                mv "$inner" "$tmp_dir"
+                rm -rf "$full_path"
+                mv "$tmp_dir" "$full_path"
+            fi
+        elif [[ "$repo_type" == "frontend" && ! -f "$full_path/package.json" ]]; then
+            # Look for a subfolder that contains package.json
+            local inner=""
+            for candidate in "$full_path"/*/; do
+                if [[ -f "${candidate}package.json" ]]; then
+                    inner="$candidate"
+                    break
+                fi
+            done
+            if [[ -n "$inner" ]]; then
+                update_status "cloning" "  Flattening nested frontend: $(basename "$inner") → $folder"
+                local tmp_dir="${full_path}.__tmp_flatten"
+                mv "$inner" "$tmp_dir"
+                rm -rf "$full_path"
+                mv "$tmp_dir" "$full_path"
+            fi
+        elif [[ "$repo_type" == "homepage" && ! -f "$full_path/package.json" && ! -f "$full_path/index.html" ]]; then
+            local inner=""
+            for candidate in "$full_path"/*/; do
+                if [[ -f "${candidate}package.json" || -f "${candidate}index.html" ]]; then
+                    inner="$candidate"
+                    break
+                fi
+            done
+            if [[ -n "$inner" ]]; then
+                update_status "cloning" "  Flattening nested homepage: $(basename "$inner") → $folder"
+                local tmp_dir="${full_path}.__tmp_flatten"
+                mv "$inner" "$tmp_dir"
+                rm -rf "$full_path"
+                mv "$tmp_dir" "$full_path"
+            fi
+        fi
     done
 
     # Copy .env to backend folder
