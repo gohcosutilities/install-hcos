@@ -65,13 +65,13 @@ app.get('/api/deploy/status', (_req, res) => {
 // and runs the actual deployment with full host access (docker, certbot, git, etc.)
 app.post('/api/deploy', (req, res) => {
   try {
-    // Check if deployment already in progress
-    if (existsSync(STATUS_FILE)) {
-      const status = JSON.parse(readFileSync(STATUS_FILE, 'utf-8'));
-      if (!status.complete && !status.error && status.phase !== 'idle') {
-        return res.status(409).json({ error: 'Deployment already in progress' });
-      }
-    }
+    // Check if deployment already in progress (removed to allow retries)
+    // if (existsSync(STATUS_FILE)) {
+    //   const status = JSON.parse(readFileSync(STATUS_FILE, 'utf-8'));
+    //   if (!status.complete && !status.error && status.phase !== 'idle') {
+    //     return res.status(409).json({ error: 'Deployment already in progress' });
+    //   }
+    // }
 
     const config = req.body;
 
