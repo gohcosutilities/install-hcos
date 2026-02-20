@@ -586,6 +586,29 @@ phase_clone_repos() {
     else
         update_status "cloning" "Phase 3: Repositories cloned"
     fi
+
+    # ── Copy auxiliary files from install-hcos repo to stack dir ──
+    # keycloak/ (Dockerfile + providers/ + themes/)
+    if [[ -d "$REPO_DIR/keycloak" ]]; then
+        rm -rf "$BASE_DIR/keycloak"
+        cp -r "$REPO_DIR/keycloak" "$BASE_DIR/keycloak"
+        update_status "cloning" "  Copied keycloak/ build context"
+    fi
+    # init-multiple-databases.sh (creates keycloakdb in postgres)
+    if [[ -f "$REPO_DIR/init-multiple-databases.sh" ]]; then
+        cp "$REPO_DIR/init-multiple-databases.sh" "$BASE_DIR/init-multiple-databases.sh"
+        chmod +x "$BASE_DIR/init-multiple-databases.sh"
+        update_status "cloning" "  Copied init-multiple-databases.sh"
+    fi
+    # nginx config scaffolding (docker-entrypoint.sh, front.conf)
+    mkdir -p "$BASE_DIR/nginx/templates"
+    if [[ -d "$REPO_DIR/nginx" ]]; then
+        cp -r "$REPO_DIR/nginx/"* "$BASE_DIR/nginx/" 2>/dev/null || true
+        [[ -f "$BASE_DIR/nginx/docker-entrypoint.sh" ]] && chmod +x "$BASE_DIR/nginx/docker-entrypoint.sh"
+        update_status "cloning" "  Copied nginx/ config scaffolding"
+    fi
+    # certbot/conf directory (needed for Docker mounts even if empty)
+    mkdir -p "$BASE_DIR/certbot/conf"
 }
 
 phase_ssl() {
@@ -640,6 +663,22 @@ phase_ssl() {
         else
             update_status "ssl" "Phase 4: Certificate files not found at $cert_src"
         fi
+    fi
+}
+
+phase_ensure_ssl() {
+    # Ensure SSL cert files exist — generate self-signed if certbot was skipped
+    local cert_dir="$BASE_DIR/certbot/conf"
+    mkdir -p "$cert_dir"
+    if [[ ! -f "$cert_dir/fullchain.pem" || ! -f "$cert_dir/privkey.pem" ]]; then
+        update_status "ssl" "Generating self-signed SSL certificates as fallback..."
+        local primary_domain
+        primary_domain=$(jq -r '.deployment.backendDomains[0] // "localhost"' "$CONFIG_FILE")
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout "$cert_dir/privkey.pem" \
+            -out "$cert_dir/fullchain.pem" \
+            -subj "/CN=${primary_domain}/O=HCOS/C=US" 2>/dev/null
+        update_status "ssl" "Self-signed SSL fallback created (replace with real certs later)"
     fi
 }
 
@@ -844,13 +883,16 @@ services:
     image: postgres:14-alpine
     container_name: postgres
     environment:
-      POSTGRES_DB: \${POSTGRES_DB:-hcos_db}
-      POSTGRES_USER: \${POSTGRES_USER:-hcos_user}
-      POSTGRES_PASSWORD: \${POSTGRES_PASSWORD:-hcos_password}
+      POSTGRES_DB: \${BACKEND_DB:-hcos_db}
+      POSTGRES_USER: \${BACKEND_USER:-hcos_db_admin}
+      POSTGRES_PASSWORD: \${BACKEND_PASSWORD:-hcos_password}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./init-multiple-databases.sh:/docker-entrypoint-initdb.d/init-multiple-databases.sh:ro
     networks:
       - hcos_network
+    extra_hosts:
+      - "postgres.local:host-gateway"
     ports:
       - "5432:5432"
 
@@ -876,26 +918,30 @@ services:
       - KEYCLOAK_ADMIN_PASSWORD=\${KEYCLOAK_ADMIN_PASSWORD:-admin}
       - KC_DB=postgres
       - KC_DB_URL=jdbc:postgresql://postgres:5432/keycloakdb
-      - KC_DB_USERNAME=\${POSTGRES_USER:-hcos_user}
-      - KC_DB_PASSWORD=\${POSTGRES_PASSWORD:-hcos_password}
+      - KC_DB_USERNAME=\${BACKEND_USER:-hcos_db_admin}
+      - KC_DB_PASSWORD=\${BACKEND_PASSWORD:-hcos_password}
     ports:
       - "3001:3001"
     networks:
       - hcos_network
     depends_on:
       - postgres
+    extra_hosts:
+      - "key.${primary_domain}:host-gateway"
+      - "postgres.local:host-gateway"
 
   backend:
     build:
       context: ./${backend_dir}
     container_name: backend_service
     command: daphne -v 2 -e ssl:port=5000:privateKey=/etc/letsencrypt/privkey.pem:certKey=/etc/letsencrypt/fullchain.pem hcos.asgi:application
+    env_file: .env
     volumes:
       - ./${backend_dir}:/app
       - ./certbot/conf:/etc/letsencrypt:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - DATABASE_URL=postgres://\${POSTGRES_USER:-hcos_user}:\${POSTGRES_PASSWORD:-hcos_password}@postgres:5432/\${POSTGRES_DB:-hcos_db}
+      - DATABASE_URL=postgres://\${BACKEND_USER:-hcos_db_admin}:\${BACKEND_PASSWORD:-hcos_password}@postgres:5432/\${BACKEND_DB:-hcos_db}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - CHANNELS_REDIS_HOST=redis
@@ -908,6 +954,7 @@ services:
     extra_hosts:
       - "key.${primary_domain}:host-gateway"
       - "internal.local:host-gateway"
+      - "postgres.local:host-gateway"
     ports:
       - "5000:5000"
 
@@ -916,15 +963,20 @@ services:
       context: ./${backend_dir}
     container_name: celery_worker
     command: celery -A hcos worker -l info -E
+    env_file: .env
     volumes:
       - ./${backend_dir}:/app
     environment:
-      - DATABASE_URL=postgres://\${POSTGRES_USER:-hcos_user}:\${POSTGRES_PASSWORD:-hcos_password}@postgres:5432/\${POSTGRES_DB:-hcos_db}
+      - DATABASE_URL=postgres://\${BACKEND_USER:-hcos_db_admin}:\${BACKEND_PASSWORD:-hcos_password}@postgres:5432/\${BACKEND_DB:-hcos_db}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
     depends_on:
-      - backend
+      - postgres
       - redis
+      - backend
+    extra_hosts:
+      - "internal.local:host-gateway"
+      - "postgres.local:host-gateway"
     networks:
       - hcos_network
 
@@ -933,15 +985,17 @@ services:
       context: ./${backend_dir}
     container_name: celery_beat
     command: celery -A hcos beat -l info
+    env_file: .env
     volumes:
       - ./${backend_dir}:/app
     environment:
-      - DATABASE_URL=postgres://\${POSTGRES_USER:-hcos_user}:\${POSTGRES_PASSWORD:-hcos_password}@postgres:5432/\${POSTGRES_DB:-hcos_db}
+      - DATABASE_URL=postgres://\${BACKEND_USER:-hcos_db_admin}:\${BACKEND_PASSWORD:-hcos_password}@postgres:5432/\${BACKEND_DB:-hcos_db}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
     depends_on:
-      - backend
+      - postgres
       - redis
+      - backend
     networks:
       - hcos_network
 
@@ -956,11 +1010,17 @@ services:
       - ./certbot/conf:/etc/letsencrypt:ro
       - ./${frontend_dir}/dist:/var/www/onedash
       - ./${homepage_dir}/dist:/var/www/homepage
+      - ./nginx/docker-entrypoint.sh:/docker-entrypoint.sh
+    entrypoint: ["/docker-entrypoint.sh"]
+    environment:
+      IS_DEBUG: "false"
     depends_on:
       - backend
       - keycloak
     networks:
       - hcos_network
+    extra_hosts:
+      - "internal.local:host-gateway"
 
 networks:
   hcos_network:
@@ -1155,6 +1215,7 @@ run_deployment() {
     phase_cloudflare_creds || { update_status "error" "Deployment failed at Phase 2: Cloudflare" "true"; return 1; }
     phase_clone_repos      || { update_status "error" "Deployment failed at Phase 3: Clone" "true"; return 1; }
     phase_ssl              || { update_status "error" "Deployment failed at Phase 4: SSL" "true"; return 1; }
+    phase_ensure_ssl       # Always ensure cert files exist (self-signed fallback)
     phase_dns              || { update_status "error" "Deployment failed at Phase 5: DNS" "true"; return 1; }
     phase_nginx_config     || { update_status "error" "Deployment failed at Phase 6: Nginx" "true"; return 1; }
     phase_docker_compose   || { update_status "error" "Deployment failed at Phase 7: Compose" "true"; return 1; }
