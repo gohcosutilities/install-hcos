@@ -505,7 +505,7 @@ phase_write_env() {
     add_env "CHAT_MESSAGE_MAX_LENGTH" ".chat.maxMessageLength"
 
     # Django settings module
-    echo "DJANGO_SETTINGS_MODULE=backend.settings" >> "$env_file"
+    echo "DJANGO_SETTINGS_MODULE=hcos.settings" >> "$env_file"
 
     update_status "writing_env" "Phase 1: .env written ($( wc -l < "$env_file" ) lines)"
 }
