@@ -1204,6 +1204,25 @@ phase_docker_up() {
         systemctl disable nginx 2>/dev/null || true
     fi
 
+    # Build frontend and homepage before starting docker
+    local frontend_dir homepage_dir
+    frontend_dir=$(jq -r '.deployment.repositories[] | select(.type=="frontend") | .folder // "ONEDASH.HCOS.IO"' "$CONFIG_FILE")
+    homepage_dir=$(jq -r '.deployment.repositories[] | select(.type=="homepage") | .folder // "HOMEPAGE"' "$CONFIG_FILE")
+
+    if [[ -d "$BASE_DIR/$frontend_dir" ]]; then
+        update_status "docker_up" "Building frontend ($frontend_dir)..."
+        cd "$BASE_DIR/$frontend_dir"
+        run_cmd "npm install && npm run build" "true"
+        cd "$BASE_DIR"
+    fi
+
+    if [[ -d "$BASE_DIR/$homepage_dir" ]]; then
+        update_status "docker_up" "Building homepage ($homepage_dir)..."
+        cd "$BASE_DIR/$homepage_dir"
+        run_cmd "npm install && npm run build" "true"
+        cd "$BASE_DIR"
+    fi
+
     # Build and start
     update_status "docker_up" "Building and starting containers..."
     run_cmd "$COMPOSE_CMD up -d --build" "false" || {
