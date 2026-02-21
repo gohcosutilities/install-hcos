@@ -1,3 +1,8 @@
+export interface RootDomain {
+  domain: string
+  cloudflareToken: string
+}
+
 export interface Repository {
   url: string
   folder: string
@@ -192,9 +197,11 @@ export interface DeploymentConfig {
     letsencryptEmail: string
     cloudflareApiToken: string
     repositories: Repository[]
-    frontendDomains: FrontendDomain[]
-    backendDomains: string[]
-    backendSubdomains: Record<string, string[]>
+    rootDomains: RootDomain[]
+    apiDomains: string[]
+    frontendDomains: string[]
+    keycloakDomains: string[]
+    homepageDomains: string[]
   }
 }
 
@@ -383,9 +390,11 @@ export function createDefaultConfig(): DeploymentConfig {
           container: 'homepage',
         },
       ],
+      rootDomains: [],
+      apiDomains: [],
       frontendDomains: [],
-      backendDomains: [],
-      backendSubdomains: {},
+      keycloakDomains: [],
+      homepageDomains: [],
     },
   }
 }

@@ -656,8 +656,6 @@ phase_clone_repos() {
         [[ -f "$BASE_DIR/nginx/docker-entrypoint.sh" ]] && chmod +x "$BASE_DIR/nginx/docker-entrypoint.sh"
         update_status "cloning" "  Copied nginx/ config scaffolding"
     fi
-    # certbot/conf directory (needed for Docker mounts even if empty)
-    mkdir -p "$BASE_DIR/certbot/conf"
 }
 
 phase_ssl() {
@@ -669,83 +667,132 @@ phase_ssl() {
         email=$(cfg ".deployment.letsencryptEmail")
     fi
 
-    if [[ -z "$email" ]]; then
-        update_status "ssl" "Phase 4: No Let's Encrypt email — skipping SSL"
+    local root_count
+    root_count=$(jq '.deployment.rootDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+
+    if [[ "$root_count" -eq 0 ]]; then
+        update_status "ssl" "Phase 4: No root domains configured — skipping SSL"
         return 0
     fi
 
-    # Get backend domains for wildcard certs
-    local domains
-    domains=$(jq -r '.deployment.backendDomains // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+    for ((i=0; i<root_count; i++)); do
+        local domain cf_token
+        domain=$(jq -r ".deployment.rootDomains[$i].domain" "$CONFIG_FILE")
+        cf_token=$(jq -r ".deployment.rootDomains[$i].cloudflareToken" "$CONFIG_FILE")
 
-    if [[ -z "$domains" ]]; then
-        update_status "ssl" "Phase 4: No backend domains configured — skipping SSL"
-        return 0
-    fi
+        if [[ -z "$domain" || "$domain" == "null" ]]; then continue; fi
 
-    for domain in $domains; do
-        update_status "ssl" "Generating wildcard cert for $domain and *.$domain ..."
-        certbot certonly \
-            --non-interactive \
-            --agree-tos \
-            --email "$email" \
-            --dns-cloudflare \
-            --dns-cloudflare-credentials /opt/cf_creds.ini \
-            --dns-cloudflare-propagation-seconds 60 \
-            -d "$domain" \
-            -d "*.$domain" 2>&1 || {
-            update_status "ssl" "WARNING: SSL cert generation failed for $domain (continuing...)"
-        }
-    done
+        local cert_dir="/etc/letsencrypt/live/$domain"
+        
+        if [[ -n "$cf_token" && "$cf_token" != "null" && -n "$email" && "$email" != "null" ]]; then
+            # Create temporary creds file for this domain
+            local creds_file="/opt/cf_creds_${domain}.ini"
+            echo "dns_cloudflare_api_token = $cf_token" > "$creds_file"
+            chmod 600 "$creds_file"
 
-    # Copy primary cert for Docker mount
-    local primary_domain
-    primary_domain=$(jq -r '.deployment.backendDomains[0] // empty' "$CONFIG_FILE")
-    if [[ -n "$primary_domain" ]]; then
-        local cert_src="/etc/letsencrypt/live/$primary_domain"
-        local cert_dst="$BASE_DIR/certbot/conf"
-        mkdir -p "$cert_dst"
-        if [[ -f "$cert_src/fullchain.pem" ]]; then
-            cp -L "$cert_src/fullchain.pem" "$cert_dst/fullchain.pem"
-            cp -L "$cert_src/privkey.pem" "$cert_dst/privkey.pem"
-            update_status "ssl" "Phase 4: SSL certificates generated and copied"
+            update_status "ssl" "Generating wildcard cert for $domain and *.$domain ..."
+            if certbot certonly \
+                --non-interactive \
+                --agree-tos \
+                --email "$email" \
+                --dns-cloudflare \
+                --dns-cloudflare-credentials "$creds_file" \
+                --dns-cloudflare-propagation-seconds 60 \
+                -d "$domain" \
+                -d "*.$domain" 2>&1; then
+                update_status "ssl" "SSL cert generated for $domain"
+            else
+                update_status "ssl" "WARNING: SSL cert generation failed for $domain. Generating self-signed fallback..."
+                mkdir -p "$cert_dir"
+                openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+                    -keyout "$cert_dir/privkey.pem" \
+                    -out "$cert_dir/fullchain.pem" \
+                    -subj "/CN=${domain}/O=HCOS/C=US" 2>/dev/null
+            fi
+            rm -f "$creds_file"
         else
-            update_status "ssl" "Phase 4: Certificate files not found at $cert_src"
+            update_status "ssl" "Missing Cloudflare token or email for $domain. Generating self-signed fallback..."
+            mkdir -p "$cert_dir"
+            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+                -keyout "$cert_dir/privkey.pem" \
+                -out "$cert_dir/fullchain.pem" \
+                -subj "/CN=${domain}/O=HCOS/C=US" 2>/dev/null
         fi
-    fi
+    done
 }
 
 phase_ensure_ssl() {
-    # Ensure SSL cert files exist — generate self-signed if certbot was skipped
-    local cert_dir="$BASE_DIR/certbot/conf"
-    mkdir -p "$cert_dir"
-    if [[ ! -f "$cert_dir/fullchain.pem" || ! -f "$cert_dir/privkey.pem" ]]; then
-        update_status "ssl" "Generating self-signed SSL certificates as fallback..."
-        local primary_domain
-        primary_domain=$(jq -r '.deployment.backendDomains[0] // "localhost"' "$CONFIG_FILE")
-        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout "$cert_dir/privkey.pem" \
-            -out "$cert_dir/fullchain.pem" \
-            -subj "/CN=${primary_domain}/O=HCOS/C=US" 2>/dev/null
-        update_status "ssl" "Self-signed SSL fallback created (replace with real certs later)"
-    fi
+    # Ensure /etc/letsencrypt exists for docker mounts
+    mkdir -p /etc/letsencrypt
+
+    # Helper to find root domain for a given domain
+    get_root_domain_for() {
+        local target_domain="$1"
+        local root_count
+        root_count=$(jq '.deployment.rootDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+        for ((i=0; i<root_count; i++)); do
+            local rd
+            rd=$(jq -r ".deployment.rootDomains[$i].domain" "$CONFIG_FILE")
+            if [[ "$target_domain" == *"$rd" ]]; then
+                echo "$rd"
+                return
+            fi
+        done
+        # Fallback
+        echo "$target_domain" | rev | cut -d. -f1,2 | rev
+    }
+
+    # Collect all domains
+    local all_domains=()
+    local api_count=$(jq '.deployment.apiDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<api_count; i++)); do all_domains+=("$(jq -r ".deployment.apiDomains[$i]" "$CONFIG_FILE")"); done
+    
+    local fe_count=$(jq '.deployment.frontendDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<fe_count; i++)); do all_domains+=("$(jq -r ".deployment.frontendDomains[$i]" "$CONFIG_FILE")"); done
+    
+    local kc_count=$(jq '.deployment.keycloakDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<kc_count; i++)); do all_domains+=("$(jq -r ".deployment.keycloakDomains[$i]" "$CONFIG_FILE")"); done
+    
+    local hp_count=$(jq '.deployment.homepageDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<hp_count; i++)); do all_domains+=("$(jq -r ".deployment.homepageDomains[$i]" "$CONFIG_FILE")"); done
+
+    local root_count=$(jq '.deployment.rootDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<root_count; i++)); do all_domains+=("$(jq -r ".deployment.rootDomains[$i].domain" "$CONFIG_FILE")"); done
+
+    local unique_domains=($(echo "${all_domains[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+
+    for domain in "${unique_domains[@]}"; do
+        if [[ -z "$domain" || "$domain" == "null" ]]; then continue; fi
+        local rd
+        rd=$(get_root_domain_for "$domain")
+        local cert_dir="/etc/letsencrypt/live/$rd"
+        
+        if [[ ! -f "$cert_dir/fullchain.pem" || ! -f "$cert_dir/privkey.pem" ]]; then
+            update_status "ssl" "Missing cert for $rd. Generating self-signed fallback..."
+            mkdir -p "$cert_dir"
+            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+                -keyout "$cert_dir/privkey.pem" \
+                -out "$cert_dir/fullchain.pem" \
+                -subj "/CN=${rd}/O=HCOS/C=US" 2>/dev/null
+        fi
+    done
 }
 
 phase_dns() {
     update_status "dns" "Phase 5: Creating DNS records..."
 
-    local cf_token server_ip
-    cf_token=$(cfg ".cloudflare.apiToken")
+    local server_ip
     server_ip=$(cfg ".deployment.serverIp")
 
-    if [[ -z "$cf_token" || -z "$server_ip" ]]; then
-        update_status "dns" "Phase 5: Missing Cloudflare token or server IP — skipping DNS"
+    if [[ -z "$server_ip" ]]; then
+        update_status "dns" "Phase 5: Missing server IP — skipping DNS"
         return 0
     fi
 
     # Helper: get zone ID for a domain
     get_zone_id() {
         local domain="$1"
+        local cf_token="$2"
         local root_domain
         root_domain=$(echo "$domain" | rev | cut -d. -f1,2 | rev)
         local result
@@ -757,7 +804,7 @@ phase_dns() {
 
     # Helper: create A record
     create_a_record() {
-        local zone_id="$1" name="$2"
+        local zone_id="$1" name="$2" cf_token="$3"
         curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records" \
             -H "Authorization: Bearer $cf_token" \
             -H "Content-Type: application/json" \
@@ -765,39 +812,65 @@ phase_dns() {
         update_status "dns" "  A record: $name → $server_ip"
     }
 
-    # Backend domains + subdomains
-    local backend_domains
-    backend_domains=$(jq -r '.deployment.backendDomains // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
-    for domain in $backend_domains; do
+    # Helper: get root domain token
+    get_cf_token_for_domain() {
+        local target_domain="$1"
+        local root_count
+        root_count=$(jq '.deployment.rootDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+        for ((i=0; i<root_count; i++)); do
+            local rd token
+            rd=$(jq -r ".deployment.rootDomains[$i].domain" "$CONFIG_FILE")
+            token=$(jq -r ".deployment.rootDomains[$i].cloudflareToken" "$CONFIG_FILE")
+            if [[ "$target_domain" == *"$rd" ]]; then
+                echo "$token"
+                return
+            fi
+        done
+        echo ""
+    }
+
+    # Process all domains
+    local all_domains=()
+    
+    # Collect all domains from the new structure
+    local api_count=$(jq '.deployment.apiDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<api_count; i++)); do all_domains+=("$(jq -r ".deployment.apiDomains[$i]" "$CONFIG_FILE")"); done
+    
+    local fe_count=$(jq '.deployment.frontendDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<fe_count; i++)); do all_domains+=("$(jq -r ".deployment.frontendDomains[$i]" "$CONFIG_FILE")"); done
+    
+    local kc_count=$(jq '.deployment.keycloakDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<kc_count; i++)); do all_domains+=("$(jq -r ".deployment.keycloakDomains[$i]" "$CONFIG_FILE")"); done
+    
+    local hp_count=$(jq '.deployment.homepageDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<hp_count; i++)); do all_domains+=("$(jq -r ".deployment.homepageDomains[$i]" "$CONFIG_FILE")"); done
+
+    # Also add root domains themselves
+    local root_count=$(jq '.deployment.rootDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<root_count; i++)); do all_domains+=("$(jq -r ".deployment.rootDomains[$i].domain" "$CONFIG_FILE")"); done
+
+    # Remove duplicates
+    local unique_domains=($(echo "${all_domains[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+
+    for domain in "${unique_domains[@]}"; do
+        if [[ -z "$domain" || "$domain" == "null" ]]; then continue; fi
+        
+        local token
+        token=$(get_cf_token_for_domain "$domain")
+        
+        if [[ -z "$token" ]]; then
+            update_status "dns" "  WARNING: No Cloudflare token found for $domain"
+            continue
+        fi
+
         local zone_id
-        zone_id=$(get_zone_id "$domain")
+        zone_id=$(get_zone_id "$domain" "$token")
         if [[ -z "$zone_id" ]]; then
             update_status "dns" "  WARNING: Could not find zone for $domain"
             continue
         fi
-        create_a_record "$zone_id" "$domain"
-
-        # Subdomains for this domain
-        local subs
-        subs=$(jq -r ".deployment.backendSubdomains[\"$domain\"] // [] | .[]" "$CONFIG_FILE" 2>/dev/null)
-        for sub in $subs; do
-            create_a_record "$zone_id" "$sub.$domain"
-        done
-    done
-
-    # Frontend domains
-    local fe_count
-    fe_count=$(jq '.deployment.frontendDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
-    for ((i=0; i<fe_count; i++)); do
-        local fe_domain
-        fe_domain=$(jq -r ".deployment.frontendDomains[$i].domain" "$CONFIG_FILE")
-        if [[ -n "$fe_domain" ]]; then
-            local zone_id
-            zone_id=$(get_zone_id "$fe_domain")
-            if [[ -n "$zone_id" ]]; then
-                create_a_record "$zone_id" "$fe_domain"
-            fi
-        fi
+        
+        create_a_record "$zone_id" "$domain" "$token"
     done
 
     update_status "dns" "Phase 5: DNS records created"
@@ -809,98 +882,133 @@ phase_nginx_config() {
     local nginx_dir="$BASE_DIR/nginx/templates"
     mkdir -p "$nginx_dir"
 
-    local primary_domain
-    primary_domain=$(jq -r '.deployment.backendDomains[0] // "example.com"' "$CONFIG_FILE")
-
     local conf=""
 
     # Upstreams
     conf+="upstream backend_upstream { server backend:5000; }\n"
     conf+="upstream keycloak_backend { server keycloak:3001; }\n\n"
 
-    # Keycloak
-    conf+="server {\n"
-    conf+="    listen 443 ssl http2;\n"
-    conf+="    server_name key.${primary_domain};\n"
-    conf+="    ssl_certificate /etc/letsencrypt/fullchain.pem;\n"
-    conf+="    ssl_certificate_key /etc/letsencrypt/privkey.pem;\n"
-    conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
-    conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
-    conf+="    location / {\n"
-    conf+="        proxy_pass http://keycloak_backend;\n"
-    conf+="        proxy_set_header Host \$host;\n"
-    conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
-    conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
-    conf+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
-    conf+="        proxy_set_header Upgrade \$http_upgrade;\n"
-    conf+="        proxy_set_header Connection \"upgrade\";\n"
-    conf+="        proxy_buffer_size 128k;\n"
-    conf+="        proxy_buffers 4 256k;\n"
-    conf+="    }\n"
-    conf+="}\n\n"
-
-    # Backend subdomain blocks
-    local backend_domains
-    backend_domains=$(jq -r '.deployment.backendDomains // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
-    for root_domain in $backend_domains; do
-        local subs
-        subs=$(jq -r ".deployment.backendSubdomains[\"$root_domain\"] // [] | .[]" "$CONFIG_FILE" 2>/dev/null)
-        for sub in $subs; do
-            conf+="server {\n"
-            conf+="    listen 443 ssl;\n"
-            conf+="    server_name ${sub}.${root_domain};\n"
-            conf+="    ssl_certificate /etc/letsencrypt/fullchain.pem;\n"
-            conf+="    ssl_certificate_key /etc/letsencrypt/privkey.pem;\n"
-            conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
-            conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
-            conf+="    location /ws/ {\n"
-            conf+="        proxy_pass https://backend_upstream;\n"
-            conf+="        proxy_ssl_verify off;\n"
-            conf+="        proxy_set_header Host \$host;\n"
-            conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
-            conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
-            conf+="        proxy_set_header X-Forwarded-Proto https;\n"
-            conf+="        proxy_http_version 1.1;\n"
-            conf+="        proxy_set_header Upgrade \$http_upgrade;\n"
-            conf+="        proxy_set_header Connection \"upgrade\";\n"
-            conf+="        proxy_read_timeout 86400;\n"
-            conf+="        proxy_send_timeout 86400;\n"
-            conf+="        proxy_buffering off;\n"
-            conf+="    }\n"
-            conf+="    location / {\n"
-            conf+="        proxy_pass https://backend_upstream;\n"
-            conf+="        proxy_ssl_verify off;\n"
-            conf+="        proxy_set_header Host \$host;\n"
-            conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
-            conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
-            conf+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
-            conf+="    }\n"
-            conf+="}\n\n"
+    # Helper to find root domain for a given domain
+    get_root_domain_for() {
+        local target_domain="$1"
+        local root_count
+        root_count=$(jq '.deployment.rootDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+        for ((i=0; i<root_count; i++)); do
+            local rd
+            rd=$(jq -r ".deployment.rootDomains[$i].domain" "$CONFIG_FILE")
+            if [[ "$target_domain" == *"$rd" ]]; then
+                echo "$rd"
+                return
+            fi
         done
+        # Fallback
+        echo "$target_domain" | rev | cut -d. -f1,2 | rev
+    }
+
+    # Keycloak Domains
+    local kc_count=$(jq '.deployment.keycloakDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<kc_count; i++)); do
+        local kc_domain rd
+        kc_domain=$(jq -r ".deployment.keycloakDomains[$i]" "$CONFIG_FILE")
+        if [[ -z "$kc_domain" || "$kc_domain" == "null" ]]; then continue; fi
+        rd=$(get_root_domain_for "$kc_domain")
+
+        conf+="server {\n"
+        conf+="    listen 443 ssl http2;\n"
+        conf+="    server_name ${kc_domain};\n"
+        conf+="    ssl_certificate /etc/letsencrypt/live/${rd}/fullchain.pem;\n"
+        conf+="    ssl_certificate_key /etc/letsencrypt/live/${rd}/privkey.pem;\n"
+        conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
+        conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
+        conf+="    location / {\n"
+        conf+="        proxy_pass http://keycloak_backend;\n"
+        conf+="        proxy_set_header Host \$host;\n"
+        conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
+        conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
+        conf+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
+        conf+="        proxy_set_header Upgrade \$http_upgrade;\n"
+        conf+="        proxy_set_header Connection \"upgrade\";\n"
+        conf+="        proxy_buffer_size 128k;\n"
+        conf+="        proxy_buffers 4 256k;\n"
+        conf+="    }\n"
+        conf+="}\n\n"
     done
 
-    # Frontend blocks
-    local fe_count
-    fe_count=$(jq '.deployment.frontendDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
-    for ((i=0; i<fe_count; i++)); do
-        local fe_domain fe_container fe_root
-        fe_domain=$(jq -r ".deployment.frontendDomains[$i].domain" "$CONFIG_FILE")
-        fe_container=$(jq -r ".deployment.frontendDomains[$i].container" "$CONFIG_FILE")
+    # API Domains
+    local api_count=$(jq '.deployment.apiDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<api_count; i++)); do
+        local api_domain rd
+        api_domain=$(jq -r ".deployment.apiDomains[$i]" "$CONFIG_FILE")
+        if [[ -z "$api_domain" || "$api_domain" == "null" ]]; then continue; fi
+        rd=$(get_root_domain_for "$api_domain")
 
-        case "$fe_container" in
-            homepage) fe_root="/var/www/homepage" ;;
-            demo)     fe_root="/var/www/demo" ;;
-            *)        fe_root="/var/www/onedash" ;;
-        esac
+        conf+="server {\n"
+        conf+="    listen 443 ssl;\n"
+        conf+="    server_name ${api_domain};\n"
+        conf+="    ssl_certificate /etc/letsencrypt/live/${rd}/fullchain.pem;\n"
+        conf+="    ssl_certificate_key /etc/letsencrypt/live/${rd}/privkey.pem;\n"
+        conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
+        conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
+        conf+="    location /ws/ {\n"
+        conf+="        proxy_pass http://backend_upstream;\n"
+        conf+="        proxy_set_header Host \$host;\n"
+        conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
+        conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
+        conf+="        proxy_set_header X-Forwarded-Proto https;\n"
+        conf+="        proxy_http_version 1.1;\n"
+        conf+="        proxy_set_header Upgrade \$http_upgrade;\n"
+        conf+="        proxy_set_header Connection \"upgrade\";\n"
+        conf+="        proxy_read_timeout 86400;\n"
+        conf+="        proxy_send_timeout 86400;\n"
+        conf+="        proxy_buffering off;\n"
+        conf+="    }\n"
+        conf+="    location / {\n"
+        conf+="        proxy_pass http://backend_upstream;\n"
+        conf+="        proxy_set_header Host \$host;\n"
+        conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
+        conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
+        conf+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
+        conf+="    }\n"
+        conf+="}\n\n"
+    done
+
+    # Frontend Domains
+    local fe_count=$(jq '.deployment.frontendDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<fe_count; i++)); do
+        local fe_domain rd
+        fe_domain=$(jq -r ".deployment.frontendDomains[$i]" "$CONFIG_FILE")
+        if [[ -z "$fe_domain" || "$fe_domain" == "null" ]]; then continue; fi
+        rd=$(get_root_domain_for "$fe_domain")
 
         conf+="server {\n"
         conf+="    listen 443 ssl;\n"
         conf+="    server_name ${fe_domain};\n"
-        conf+="    ssl_certificate /etc/letsencrypt/fullchain.pem;\n"
-        conf+="    ssl_certificate_key /etc/letsencrypt/privkey.pem;\n"
+        conf+="    ssl_certificate /etc/letsencrypt/live/${rd}/fullchain.pem;\n"
+        conf+="    ssl_certificate_key /etc/letsencrypt/live/${rd}/privkey.pem;\n"
         conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
         conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
-        conf+="    root ${fe_root};\n"
+        conf+="    root /var/www/onedash;\n"
+        conf+="    index index.html;\n"
+        conf+="    location / { try_files \$uri \$uri/ /index.html; }\n"
+        conf+="}\n\n"
+    done
+
+    # Homepage Domains
+    local hp_count=$(jq '.deployment.homepageDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<hp_count; i++)); do
+        local hp_domain rd
+        hp_domain=$(jq -r ".deployment.homepageDomains[$i]" "$CONFIG_FILE")
+        if [[ -z "$hp_domain" || "$hp_domain" == "null" ]]; then continue; fi
+        rd=$(get_root_domain_for "$hp_domain")
+
+        conf+="server {\n"
+        conf+="    listen 443 ssl;\n"
+        conf+="    server_name ${hp_domain};\n"
+        conf+="    ssl_certificate /etc/letsencrypt/live/${rd}/fullchain.pem;\n"
+        conf+="    ssl_certificate_key /etc/letsencrypt/live/${rd}/privkey.pem;\n"
+        conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
+        conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
+        conf+="    root /var/www/homepage;\n"
         conf+="    index index.html;\n"
         conf+="    location / { try_files \$uri \$uri/ /index.html; }\n"
         conf+="}\n\n"
@@ -920,11 +1028,11 @@ phase_nginx_config() {
 phase_docker_compose() {
     update_status "compose" "Phase 7: Generating docker-compose.yml..."
 
-    local backend_dir frontend_dir homepage_dir primary_domain
+    local backend_dir frontend_dir homepage_dir primary_kc_domain
     backend_dir=$(jq -r '.deployment.repositories[] | select(.type=="backend") | .folder // "BACKEND-API-HCOM"' "$CONFIG_FILE")
     frontend_dir=$(jq -r '.deployment.repositories[] | select(.type=="frontend") | .folder // "ONEDASH.HCOS.IO"' "$CONFIG_FILE")
     homepage_dir=$(jq -r '.deployment.repositories[] | select(.type=="homepage") | .folder // "HOMEPAGE"' "$CONFIG_FILE")
-    primary_domain=$(jq -r '.deployment.backendDomains[0] // "example.com"' "$CONFIG_FILE")
+    primary_kc_domain=$(jq -r '.deployment.keycloakDomains[0] // "keycloak.example.com"' "$CONFIG_FILE")
 
     cat > "$BASE_DIR/docker-compose.yml" <<COMPOSEEOF
 services:
@@ -958,7 +1066,7 @@ services:
     command: start --optimized
     environment:
       - KC_PROXY_HEADERS=xforwarded
-      - KC_HOSTNAME=https://key.${primary_domain}
+      - KC_HOSTNAME=https://${primary_kc_domain}
       - KC_HOSTNAME_STRICT=true
       - KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true
       - KC_HTTP_ENABLED=true
@@ -976,18 +1084,17 @@ services:
     depends_on:
       - postgres
     extra_hosts:
-      - "key.${primary_domain}:host-gateway"
+      - "${primary_kc_domain}:host-gateway"
       - "postgres.local:host-gateway"
 
   backend:
     build:
       context: ./${backend_dir}
     container_name: backend_service
-    command: daphne -v 2 -e ssl:port=5000:privateKey=/etc/letsencrypt/privkey.pem:certKey=/etc/letsencrypt/fullchain.pem hcos.asgi:application
+    command: daphne -b 0.0.0.0 -p 5000 hcos.asgi:application
     env_file: .env
     volumes:
       - ./${backend_dir}:/app
-      - ./certbot/conf:/etc/letsencrypt:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - DATABASE_URL=postgres://\${BACKEND_USER:-hcos_db_admin}:\${BACKEND_PASSWORD:-hcos_password}@postgres:5432/\${BACKEND_DB:-hcos_db}
@@ -1001,7 +1108,7 @@ services:
     networks:
       - hcos_network
     extra_hosts:
-      - "key.${primary_domain}:host-gateway"
+      - "${primary_kc_domain}:host-gateway"
       - "internal.local:host-gateway"
       - "postgres.local:host-gateway"
     ports:
@@ -1056,7 +1163,7 @@ services:
       - "443:443"
     volumes:
       - ./nginx/templates:/etc/nginx/templates
-      - ./certbot/conf:/etc/letsencrypt:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
       - ./${frontend_dir}/dist:/var/www/onedash
       - ./${homepage_dir}/dist:/var/www/homepage
       - ./nginx/docker-entrypoint.sh:/docker-entrypoint.sh

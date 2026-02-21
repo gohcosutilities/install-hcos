@@ -8,43 +8,19 @@ import { ref } from 'vue'
 const store = useSetupStore()
 const c = store.config.deployment
 
-// ── Backend subdomain input ──
-const newSubdomain = ref('')
-const activeBackendDomain = ref('')
-
-function addBackendDomain() {
-  const val = prompt('Enter a backend root domain (e.g., example.com)')
-  if (val && !c.backendDomains.includes(val.trim())) {
-    c.backendDomains.push(val.trim())
-    c.backendSubdomains[val.trim()] = []
-  }
+// ── Domain Management ──
+function addRootDomain() {
+  c.rootDomains.push({ domain: '', cloudflareToken: '' })
+}
+function removeRootDomain(idx: number) {
+  c.rootDomains.splice(idx, 1)
 }
 
-function removeBackendDomain(idx: number) {
-  const domain = c.backendDomains[idx]
-  c.backendDomains.splice(idx, 1)
-  if (domain) delete c.backendSubdomains[domain]
+function addDomain(list: string[]) {
+  list.push('')
 }
-
-function addSubdomain(domain: string) {
-  if (!newSubdomain.value.trim()) return
-  if (!c.backendSubdomains[domain]) c.backendSubdomains[domain] = []
-  if (!c.backendSubdomains[domain].includes(newSubdomain.value.trim())) {
-    c.backendSubdomains[domain].push(newSubdomain.value.trim())
-  }
-  newSubdomain.value = ''
-}
-
-function removeSubdomain(domain: string, idx: number) {
-  c.backendSubdomains[domain]?.splice(idx, 1)
-}
-
-function addFrontendDomain() {
-  c.frontendDomains.push({ domain: '', container: 'onedash', isWildcard: false })
-}
-
-function removeFrontendDomain(idx: number) {
-  c.frontendDomains.splice(idx, 1)
+function removeDomain(list: string[], idx: number) {
+  list.splice(idx, 1)
 }
 
 function addRepository() {
@@ -82,10 +58,76 @@ store.detectIp()
     <div class="card">
       <h3 class="card-title">SSL Certificate</h3>
       <TextInput v-model="c.letsencryptEmail" label="Let's Encrypt Email" type="email" placeholder="admin@example.com" help-text="Used for certificate notifications and account recovery." required />
-      <PasswordInput v-model="c.cloudflareApiToken" label="Cloudflare API Token" placeholder="API token with DNS edit permissions" help-text="Used for DNS-01 challenge to generate wildcard SSL certificates." required />
     </div>
 
-    <!-- Repositories → Domain mapping -->
+    <!-- Root Domains -->
+    <div class="card">
+      <h3 class="card-title">Root Domains & Cloudflare</h3>
+      <p class="card-desc">Define your root domains (e.g., example.com) and their respective Cloudflare API tokens for DNS-01 SSL challenges.</p>
+      <div v-for="(rd, idx) in c.rootDomains" :key="idx" class="repo-row">
+        <div class="repo-header">
+          <span class="repo-type-badge backend">Root Domain</span>
+          <button type="button" class="btn-remove" @click="removeRootDomain(idx)">✕</button>
+        </div>
+        <TextInput v-model="rd.domain" label="Root Domain" placeholder="example.com" />
+        <PasswordInput v-model="rd.cloudflareToken" label="Cloudflare API Token" placeholder="API token with DNS edit permissions" />
+      </div>
+      <button type="button" class="btn-secondary" @click="addRootDomain()">+ Add Root Domain</button>
+    </div>
+
+    <!-- API Domains -->
+    <div class="card">
+      <h3 class="card-title">API Domains (Backend)</h3>
+      <p class="card-desc">Domains that will proxy to the Django backend service (e.g., api.example.com).</p>
+      <div v-for="(_, idx) in c.apiDomains" :key="'api'+idx" class="fe-row">
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <TextInput v-model="c.apiDomains[idx]" placeholder="api.example.com" style="flex: 1;" />
+          <button type="button" class="btn-remove" @click="removeDomain(c.apiDomains, idx)">✕</button>
+        </div>
+      </div>
+      <button type="button" class="btn-secondary" @click="addDomain(c.apiDomains)">+ Add API Domain</button>
+    </div>
+
+    <!-- Frontend Domains -->
+    <div class="card">
+      <h3 class="card-title">Frontend Domains</h3>
+      <p class="card-desc">Domains that will proxy to the Vue3 frontend service (e.g., onedash.example.com).</p>
+      <div v-for="(_, idx) in c.frontendDomains" :key="'fe'+idx" class="fe-row">
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <TextInput v-model="c.frontendDomains[idx]" placeholder="onedash.example.com" style="flex: 1;" />
+          <button type="button" class="btn-remove" @click="removeDomain(c.frontendDomains, idx)">✕</button>
+        </div>
+      </div>
+      <button type="button" class="btn-secondary" @click="addDomain(c.frontendDomains)">+ Add Frontend Domain</button>
+    </div>
+
+    <!-- Keycloak Domains -->
+    <div class="card">
+      <h3 class="card-title">Keycloak Domains</h3>
+      <p class="card-desc">Domains that will proxy to the Keycloak service (e.g., key.example.com).</p>
+      <div v-for="(_, idx) in c.keycloakDomains" :key="'kc'+idx" class="fe-row">
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <TextInput v-model="c.keycloakDomains[idx]" placeholder="key.example.com" style="flex: 1;" />
+          <button type="button" class="btn-remove" @click="removeDomain(c.keycloakDomains, idx)">✕</button>
+        </div>
+      </div>
+      <button type="button" class="btn-secondary" @click="addDomain(c.keycloakDomains)">+ Add Keycloak Domain</button>
+    </div>
+
+    <!-- Homepage Domains -->
+    <div class="card">
+      <h3 class="card-title">Homepage Domains</h3>
+      <p class="card-desc">Domains that will proxy to the Homepage project (e.g., example.com).</p>
+      <div v-for="(_, idx) in c.homepageDomains" :key="'hp'+idx" class="fe-row">
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <TextInput v-model="c.homepageDomains[idx]" placeholder="example.com" style="flex: 1;" />
+          <button type="button" class="btn-remove" @click="removeDomain(c.homepageDomains, idx)">✕</button>
+        </div>
+      </div>
+      <button type="button" class="btn-secondary" @click="addDomain(c.homepageDomains)">+ Add Homepage Domain</button>
+    </div>
+
+    <!-- Repositories -->
     <div class="card">
       <h3 class="card-title">Repositories</h3>
       <p class="card-desc">Map each repository to a folder name & which domain it will serve.</p>
@@ -117,60 +159,6 @@ store.detectIp()
         </div>
       </div>
       <button type="button" class="btn-secondary" @click="addRepository()">+ Add Repository</button>
-    </div>
-
-    <!-- Backend Domains + Subdomains -->
-    <div class="card">
-      <h3 class="card-title">Backend Root Domains</h3>
-      <p class="card-desc">Wildcard SSL (*.domain.com) will be issued for each root domain. Then specify subdomains that proxy to the backend.</p>
-
-      <div v-for="(domain, idx) in c.backendDomains" :key="domain" class="domain-block">
-        <div class="domain-header">
-          <code>*.{{ domain }}</code>
-          <button type="button" class="btn-remove" @click="removeBackendDomain(idx)">✕</button>
-        </div>
-        <div class="subdomain-list">
-          <span v-for="(sub, si) in c.backendSubdomains[domain] || []" :key="si" class="tag">
-            {{ sub }}.{{ domain }}
-            <button type="button" class="tag-remove" @click="removeSubdomain(domain, si)">×</button>
-          </span>
-        </div>
-        <div class="subdomain-add">
-          <input
-            v-model="newSubdomain"
-            placeholder="subdomain (e.g., api)"
-            class="field-input small"
-            @focus="activeBackendDomain = domain"
-            @keydown.enter.prevent="addSubdomain(domain)"
-          />
-          <button type="button" class="btn-secondary small" @click="addSubdomain(domain)">Add</button>
-        </div>
-      </div>
-      <button type="button" class="btn-secondary" @click="addBackendDomain()">+ Add Backend Domain</button>
-    </div>
-
-    <!-- Frontend Domains -->
-    <div class="card">
-      <h3 class="card-title">Frontend Domains</h3>
-      <p class="card-desc">Map each frontend domain to a container (onedash, homepage, demo).</p>
-
-      <div v-for="(fe, idx) in c.frontendDomains" :key="idx" class="fe-row">
-        <TextInput v-model="fe.domain" label="Domain" placeholder="onedash.example.com" />
-        <div class="field">
-          <label class="field-label">Container</label>
-          <select v-model="fe.container" class="field-select">
-            <option value="onedash">onedash</option>
-            <option value="homepage">homepage</option>
-            <option value="demo">demo</option>
-          </select>
-        </div>
-        <label class="checkbox-row">
-          <input type="checkbox" v-model="fe.isWildcard" />
-          <span>Also serve *.rootdomain (wildcard)</span>
-        </label>
-        <button type="button" class="btn-remove" @click="removeFrontendDomain(idx)">✕</button>
-      </div>
-      <button type="button" class="btn-secondary" @click="addFrontendDomain()">+ Add Frontend Domain</button>
     </div>
   </div>
 </template>
