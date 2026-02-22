@@ -425,9 +425,49 @@ phase_write_env() {
 
     # Security / CORS
     add_env_array "ALLOWED_DOMAINS" ".security.allowedDomains"
-    add_env_array "CORS_ALLOWED_ORIGINS" ".security.corsOrigins"
-    add_env_array "ALLOWED_HOSTS" ".security.allowedHosts"
-    add_env "SESSION_COOKIE_AGE" ".security.sessionCookieAge"
+    add_env_array "ALLOWED_HOSTS"   ".security.allowedHosts"
+    add_env "SESSION_COOKIE_AGE"    ".security.sessionCookieAge"
+
+    # ── Build CORS_ALLOWED_ORIGINS comprehensively ────────────────────────────
+    # Start with any explicitly configured origins from the deploy config, then
+    # union with ALL api, frontend, homepage and root domains so that every
+    # origin is always allowed — even if the operator forgot to add it to
+    # .security.corsOrigins.
+    local _cors_base
+    _cors_base=$(jq -r '(.security.corsOrigins // []) | .[]' "$CONFIG_FILE" 2>/dev/null)
+
+    declare -A _cors_seen=()
+    local _cors_list=""
+
+    _cors_add() {
+        local _origin="$1"
+        [[ -z "$_origin" || "${_cors_seen[$_origin]+_}" ]] && return
+        _cors_seen["$_origin"]=1
+        _cors_list+="${_cors_list:+,}${_origin}"
+    }
+
+    # Explicit origins from config
+    while IFS= read -r o; do [[ -n "$o" ]] && _cors_add "$o"; done <<< "$_cors_base"
+
+    # API domains (backend endpoints)
+    while IFS= read -r d; do [[ -n "$d" ]] && _cors_add "https://${d}"; done \
+        < <(jq -r '.deployment.apiDomains // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+
+    # Frontend dashboard domains
+    while IFS= read -r d; do [[ -n "$d" ]] && _cors_add "https://${d}"; done \
+        < <(jq -r '.deployment.frontendDomains // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+
+    # Homepage domains (public marketing site — origin of unauthenticated POSTs)
+    while IFS= read -r d; do [[ -n "$d" ]] && _cors_add "https://${d}"; done \
+        < <(jq -r '.deployment.homepageDomains // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+
+    # Root / apex domains
+    while IFS= read -r d; do [[ -n "$d" ]] && _cors_add "https://${d}"; done \
+        < <(jq -r '.deployment.rootDomains // [] | .[].domain' "$CONFIG_FILE" 2>/dev/null)
+
+    [[ -n "$_cors_list" ]] && echo "CORS_ALLOWED_ORIGINS=${_cors_list}" >> "$env_file"
+    unset _cors_seen _cors_list _cors_base
+    # ─────────────────────────────────────────────────────────────────────────
 
     # Logging
     add_env "LOGSTASH_HOST" ".logging.logstashHost"
@@ -888,6 +928,26 @@ phase_nginx_config() {
     conf+="upstream backend_upstream { server backend:5000; }\n"
     conf+="upstream keycloak_backend { server keycloak:3001; }\n\n"
 
+    # ── CORS origin whitelist map ──────────────────────────────────────────────
+    # Maps the incoming Origin header to itself when it is an allowed origin, or
+    # to an empty string when it is not.  Django corsheaders handles the actual
+    # CORS validation for non-OPTIONS responses; Nginx only uses this for the
+    # OPTIONS preflight short-circuit in the API domain location blocks below.
+    conf+="# CORS origin whitelist (generated from deployment config)\n"
+    conf+="map \$http_origin \$cors_origin {\n"
+    conf+="    default  \"\";\n"
+    local _cors_root_d
+    while IFS= read -r _cors_root_d; do
+        [[ -z "$_cors_root_d" || "$_cors_root_d" == "null" ]] && continue
+        local _escaped
+        _escaped=$(echo "$_cors_root_d" | sed 's/\./\\\\./g')
+        conf+="    \"~^https://([\\\\w-]+\\\\.)?${_escaped}\$\"  \$http_origin;\n"
+    done < <(jq -r '.deployment.rootDomains // [] | .[].domain' "$CONFIG_FILE" 2>/dev/null)
+    conf+="    \"~^https://localhost(:\\\\d+)?\$\"  \$http_origin;\n"
+    conf+="    \"~^http://localhost(:\\\\d+)?\$\"   \$http_origin;\n"
+    conf+="}\n\n"
+    # ──────────────────────────────────────────────────────────────────────────
+
     # Helper to find root domain for a given domain
     get_root_domain_for() {
         local target_domain="$1"
@@ -963,11 +1023,29 @@ phase_nginx_config() {
         conf+="        proxy_buffering off;\n"
         conf+="    }\n"
         conf+="    location / {\n"
+        # CORS: short-circuit OPTIONS preflight so the browser never waits for
+        # Django.  For allowed origins \$cors_origin echoes the request origin
+        # back; for disallowed origins it is empty (header suppressed).
+        conf+="        if (\$request_method = 'OPTIONS') {\n"
+        conf+="            add_header 'Access-Control-Allow-Origin'      \"\$cors_origin\" always;\n"
+        conf+="            add_header 'Access-Control-Allow-Credentials' 'true'         always;\n"
+        conf+="            add_header 'Access-Control-Allow-Methods'     'GET, POST, PUT, PATCH, DELETE, OPTIONS' always;\n"
+        conf+="            add_header 'Access-Control-Allow-Headers'     'Authorization, Content-Type, X-CSRFToken, X-Requested-With, Accept, Origin' always;\n"
+        conf+="            add_header 'Access-Control-Max-Age'           '86400'        always;\n"
+        conf+="            return 204;\n"
+        conf+="        }\n"
         conf+="        proxy_pass http://backend_upstream;\n"
+        conf+="        proxy_http_version 1.1;\n"
         conf+="        proxy_set_header Host \$host;\n"
         conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
         conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
         conf+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
+        # Explicitly forward the Origin header so Django corsheaders can
+        # validate it and attach Access-Control-Allow-Origin to the response.
+        conf+="        proxy_set_header Origin \$http_origin;\n"
+        conf+="        proxy_read_timeout 300s;\n"
+        conf+="        proxy_connect_timeout 60s;\n"
+        conf+="        proxy_send_timeout 300s;\n"
         conf+="    }\n"
         conf+="}\n\n"
     done
