@@ -524,6 +524,11 @@ phase_write_env() {
     add_env "NGINX_CONTAINER_NAME" ".nginx.containerName"
     add_env "NGINX_SSL_CERT_PATH" ".nginx.sslCertPath"
     add_env "NGINX_SSL_KEY_PATH" ".nginx.sslKeyPath"
+    # NGINX_CONFIG_PATH — path inside the backend container that maps to
+    # the same bind-mount used by nginx_main (/etc/nginx/conf.d).
+    # This lets NginxManager read/write the live nginx config without
+    # needing to exec into the nginx container.
+    echo "NGINX_CONFIG_PATH=/etc/nginx-conf/default.conf" >> "$env_file"
 
     # SSL
     add_env "WILDCARD_SSL_ENABLED" ".ssl.wildcardEnabled"
@@ -1023,10 +1028,13 @@ phase_nginx_config() {
         conf+="        proxy_buffering off;\n"
         conf+="    }\n"
         conf+="    location / {\n"
-        # CORS: short-circuit OPTIONS preflight so the browser never waits for
-        # Django.  For allowed origins \$cors_origin echoes the request origin
-        # back; for disallowed origins it is empty (header suppressed).
-        conf+="        if (\$request_method = 'OPTIONS') {\n"
+        # Use a variable flag so 204 only fires for *known* (whitelisted) origins.
+        # For own-domain tenants whose origin is not in the static map, $cors_origin
+        # is empty and the flag stays 0, so the request falls through to Django CORS.
+        conf+="        set \$do_cors_preflight 0;\n"
+        conf+="        if (\$request_method = 'OPTIONS') { set \$do_cors_preflight 1; }\n"
+        conf+="        if (\$cors_origin = \"\") { set \$do_cors_preflight 0; }\n"
+        conf+="        if (\$do_cors_preflight = 1) {\n"
         conf+="            add_header 'Access-Control-Allow-Origin'      \"\$cors_origin\" always;\n"
         conf+="            add_header 'Access-Control-Allow-Credentials' 'true'         always;\n"
         conf+="            add_header 'Access-Control-Allow-Methods'     'GET, POST, PUT, PATCH, DELETE, OPTIONS' always;\n"
@@ -1092,6 +1100,76 @@ phase_nginx_config() {
         conf+="}\n\n"
     done
 
+    # ── Wildcard catch-all for tenant system subdomains (*.rootDomain) ─────────
+    # Every system-generated subdomain (e.g. galaxy.hcos.io) is handled by
+    # this block.  Specific server_name entries (request.*, onedash.*, etc.)
+    # always win over the wildcard, so they are unaffected.
+    local rd_wc_count
+    rd_wc_count=$(jq '.deployment.rootDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((wi=0; wi<rd_wc_count; wi++)); do
+        local wc_rd
+        wc_rd=$(jq -r ".deployment.rootDomains[$wi].domain" "$CONFIG_FILE")
+        [[ -z "$wc_rd" || "$wc_rd" == "null" ]] && continue
+        conf+="# Wildcard catch-all for tenant subdomains (*.${wc_rd})\n"
+        conf+="server {\n"
+        conf+="    listen 443 ssl;\n"
+        conf+="    server_name *.${wc_rd};\n"
+        conf+="    ssl_certificate /etc/letsencrypt/live/${wc_rd}/fullchain.pem;\n"
+        conf+="    ssl_certificate_key /etc/letsencrypt/live/${wc_rd}/privkey.pem;\n"
+        conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
+        conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
+        conf+="    location /ws/ {\n"
+        conf+="        proxy_pass http://backend_upstream;\n"
+        conf+="        proxy_set_header Host \$host;\n"
+        conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
+        conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
+        conf+="        proxy_set_header X-Forwarded-Proto https;\n"
+        conf+="        proxy_http_version 1.1;\n"
+        conf+="        proxy_set_header Upgrade \$http_upgrade;\n"
+        conf+="        proxy_set_header Connection \"upgrade\";\n"
+        conf+="        proxy_read_timeout 86400;\n"
+        conf+="        proxy_send_timeout 86400;\n"
+        conf+="        proxy_connect_timeout 10;\n"
+        conf+="        proxy_cache off;\n"
+        conf+="        proxy_buffering off;\n"
+        conf+="    }\n"
+        conf+="    location / {\n"
+        # Use a variable flag so the return 204 only fires for known origins.
+        # Unknown origins (own-domain tenants) fall through to Django CORS.
+        conf+="        set \$do_cors_preflight 0;\n"
+        conf+="        if (\$request_method = 'OPTIONS') { set \$do_cors_preflight 1; }\n"
+        conf+="        if (\$cors_origin = \"\") { set \$do_cors_preflight 0; }\n"
+        conf+="        if (\$do_cors_preflight = 1) {\n"
+        conf+="            add_header 'Access-Control-Allow-Origin'      \"\$cors_origin\" always;\n"
+        conf+="            add_header 'Access-Control-Allow-Credentials' 'true'         always;\n"
+        conf+="            add_header 'Access-Control-Allow-Methods'     'GET, POST, PUT, PATCH, DELETE, OPTIONS' always;\n"
+        conf+="            add_header 'Access-Control-Allow-Headers'     'Authorization, Content-Type, X-CSRFToken, X-Requested-With, Accept, Origin' always;\n"
+        conf+="            add_header 'Access-Control-Max-Age'           '86400'        always;\n"
+        conf+="            return 204;\n"
+        conf+="        }\n"
+        conf+="        proxy_pass http://backend_upstream;\n"
+        conf+="        proxy_http_version 1.1;\n"
+        conf+="        proxy_set_header Host \$host;\n"
+        conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
+        conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
+        conf+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
+        conf+="        proxy_set_header Origin \$http_origin;\n"
+        conf+="        proxy_read_timeout 300s;\n"
+        conf+="    }\n"
+        conf+="}\n\n"
+    done
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # ── Section for own-domain tenant blocks added at runtime by NginxManager ─
+    # NginxManager (running inside the backend container) appends server blocks
+    # here when a tenant verifies a custom domain.  The block delimiters are
+    # used as markers so the manager can find the insertion point reliably.
+    conf+="# === DYNAMIC TENANT DOMAINS (AUTO-GENERATED) ===\n"
+    conf+="# Own-domain tenant blocks are appended here by NginxManager.\n"
+    conf+="# DO NOT EDIT THIS SECTION MANUALLY.\n"
+    conf+="# === DYNAMIC TENANT DOMAINS (AUTO-GENERATED) ===\n\n"
+    # ─────────────────────────────────────────────────────────────────────────
+
     # HTTP → HTTPS redirect
     conf+="server {\n"
     conf+="    listen 80;\n"
@@ -1099,6 +1177,13 @@ phase_nginx_config() {
     conf+="    return 301 https://\$host\$request_uri;\n"
     conf+="}\n"
 
+    # Write to the shared conf.d bind-mount directory so that:
+    #   • nginx_main reads it at /etc/nginx/conf.d/default.conf
+    #   • backend can modify it at /etc/nginx-conf/default.conf
+    # Also keep the template copy as a reference / fallback.
+    mkdir -p "$BASE_DIR/nginx/conf.d"
+    echo -e "$conf" > "$BASE_DIR/nginx/conf.d/default.conf"
+    mkdir -p "$nginx_dir"
     echo -e "$conf" > "$nginx_dir/default.conf.template"
     update_status "nginx" "Phase 6: Nginx config written"
 }
@@ -1174,6 +1259,8 @@ services:
     volumes:
       - ./${backend_dir}:/app
       - /var/run/docker.sock:/var/run/docker.sock
+      # Shared nginx config — backend writes here, nginx_main reads from /etc/nginx/conf.d
+      - ./nginx/conf.d:/etc/nginx-conf
     environment:
       - DATABASE_URL=postgres://\${BACKEND_USER:-hcos_db_admin}:\${BACKEND_PASSWORD:-hcos_password}@postgres:5432/\${BACKEND_DB:-hcos_db}
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -1240,6 +1327,9 @@ services:
       - "80:80"
       - "443:443"
     volumes:
+      # Shared bind-mount: nginx reads config here; backend writes here via NginxManager
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      # Template kept as a fallback / reference (docker-entrypoint.sh skips it if conf.d exists)
       - ./nginx/templates:/etc/nginx/templates
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - ./${frontend_dir}/dist:/var/www/onedash

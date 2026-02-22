@@ -95,10 +95,11 @@ services:
     build:
       context: ./BACKEND-API-HCOM
     container_name: backend_service
-    command: daphne -v 2 -e ssl:port=5000:privateKey=/etc/letsencrypt/privkey.pem:certKey=/etc/letsencrypt/fullchain.pem hcos.asgi:application
+    # Daphne serves plain HTTP/WS on port 5000; SSL is terminated by nginx_main.
+    # Do NOT use -e ssl:... here — nginx proxies via http://backend:5000.
+    command: daphne -b 0.0.0.0 -p 5000 -v 2 hcos.asgi:application
     volumes:
       - ./BACKEND-API-HCOM:/app
-      - ./certbot/conf:/etc/letsencrypt:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - DATABASE_URL=postgres://${BACKEND_USER:-hcos_db_admin}:${BACKEND_PASSWORD:-hcos_password}@postgres:5432/${BACKEND_DB:-hcos_db}

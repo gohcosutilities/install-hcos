@@ -89,8 +89,18 @@ else
             add_header Cache-Control "public, immutable";'
 fi
 
-# Substitute environment variables in the template
-envsubst '${GOHCOS_LOCATION_CONFIG},${ONEDASH_LOCATION_CONFIG}' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf
+# If install.sh has pre-generated /etc/nginx/conf.d/default.conf (which is
+# bind-mounted from ./nginx/conf.d on the host), use it as-is so that any
+# dynamic changes made by NginxManager (running inside the backend container)
+# survive nginx container restarts.
+# Only fall back to template processing when no pre-generated file is present,
+# e.g. on a first boot before install.sh has run.
+if [ -f /etc/nginx/conf.d/default.conf ]; then
+    echo "Using pre-generated nginx config from /etc/nginx/conf.d/default.conf"
+else
+    # Substitute environment variables in the template
+    envsubst '${GOHCOS_LOCATION_CONFIG},${ONEDASH_LOCATION_CONFIG}' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf
+fi
 
 # Execute the original nginx command
 exec nginx -g "daemon off;"
