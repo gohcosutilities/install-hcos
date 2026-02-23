@@ -6,6 +6,18 @@
     proxy_cache_path /tmp/nginx_proxy_cache levels=1:2 keys_zone=nginx_cache:10m max_size=1g
                  inactive=60m use_temp_path=off;
 
+    # ── CORS origin whitelist ──────────────────────────────────────────────────
+    # Maps the incoming request Origin to itself when allowed, or to "" otherwise.
+    map $http_origin $cors_origin {
+        default                                     "";
+        "~^https://([\w-]+\.)?hcos\.io$"            $http_origin;
+        "~^https://([\w-]+\.)?gohcos\.com$"         $http_origin;
+        "~^https://([\w-]+\.)?hcomos\.com$"         $http_origin;
+        "~^https://localhost(:\d+)?$"               $http_origin;
+        "~^http://localhost(:\d+)?$"                $http_origin;
+    }
+    # ──────────────────────────────────────────────────────────────────────────
+
     # --- HTTPS Server Configurations ---
 
     # DNS resolver for Docker service discovery
@@ -175,11 +187,28 @@ server {
 
         # Regular HTTP/API requests
         location / {
+            # ── CORS preflight short-circuit ──────────────────────────────────────
+            if ($request_method = 'OPTIONS') {
+                add_header 'Access-Control-Allow-Origin'      "$cors_origin" always;
+                add_header 'Access-Control-Allow-Credentials' 'true'         always;
+                add_header 'Access-Control-Allow-Methods'     'GET, POST, PUT, PATCH, DELETE, OPTIONS' always;
+                add_header 'Access-Control-Allow-Headers'     'Authorization, Content-Type, X-CSRFToken, X-Requested-With, Accept, Origin, X-Request-UUID, Idempotency-Key, Cache-Control, Pragma' always;
+                add_header 'Access-Control-Max-Age'           '86400'        always;
+                return 204;
+            }
+            # ──────────────────────────────────────────────────────────────────
+
             proxy_pass https://internal.local:5000;
+            proxy_ssl_verify off;
+            proxy_http_version 1.1;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Origin $http_origin;
+            proxy_read_timeout 300s;
+            proxy_connect_timeout 60s;
+            proxy_send_timeout 300s;
         }
     }
 
@@ -219,11 +248,28 @@ server {
 
         # Regular HTTP/API requests
         location / {
+            # ── CORS preflight short-circuit (mirrors request.hcos.io block) ──
+            if ($request_method = 'OPTIONS') {
+                add_header 'Access-Control-Allow-Origin'      "$cors_origin" always;
+                add_header 'Access-Control-Allow-Credentials' 'true'         always;
+                add_header 'Access-Control-Allow-Methods'     'GET, POST, PUT, PATCH, DELETE, OPTIONS' always;
+                add_header 'Access-Control-Allow-Headers'     'Authorization, Content-Type, X-CSRFToken, X-Requested-With, Accept, Origin, X-Request-UUID, Idempotency-Key, Cache-Control, Pragma' always;
+                add_header 'Access-Control-Max-Age'           '86400'        always;
+                return 204;
+            }
+            # ──────────────────────────────────────────────────────────────────
+
             proxy_pass https://internal.local:5000;
+            proxy_ssl_verify off;
+            proxy_http_version 1.1;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Origin $http_origin;
+            proxy_read_timeout 300s;
+            proxy_connect_timeout 60s;
+            proxy_send_timeout 300s;
         }
     }
 
