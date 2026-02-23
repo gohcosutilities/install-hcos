@@ -1118,6 +1118,10 @@ phase_nginx_config() {
         conf+="    ssl_certificate_key /etc/letsencrypt/live/${wc_rd}/privkey.pem;\n"
         conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
         conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
+        # ── Serve Vue3 SPA (ONEDASH) for tenant subdomains ──
+        conf+="    root /var/www/onedash;\n"
+        conf+="    index index.html;\n\n"
+        # WebSocket proxy
         conf+="    location /ws/ {\n"
         conf+="        proxy_pass http://backend_upstream;\n"
         conf+="        proxy_set_header Host \$host;\n"
@@ -1132,10 +1136,9 @@ phase_nginx_config() {
         conf+="        proxy_connect_timeout 10;\n"
         conf+="        proxy_cache off;\n"
         conf+="        proxy_buffering off;\n"
-        conf+="    }\n"
-        conf+="    location / {\n"
-        # Use a variable flag so the return 204 only fires for known origins.
-        # Unknown origins (own-domain tenants) fall through to Django CORS.
+        conf+="    }\n\n"
+        # API proxy — all backend API calls go through /api/
+        conf+="    location /api/ {\n"
         conf+="        set \$do_cors_preflight 0;\n"
         conf+="        if (\$request_method = 'OPTIONS') { set \$do_cors_preflight 1; }\n"
         conf+="        if (\$cors_origin = \"\") { set \$do_cors_preflight 0; }\n"
@@ -1155,6 +1158,10 @@ phase_nginx_config() {
         conf+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
         conf+="        proxy_set_header Origin \$http_origin;\n"
         conf+="        proxy_read_timeout 300s;\n"
+        conf+="    }\n\n"
+        # SPA fallback — serve Vue3 frontend for all other routes
+        conf+="    location / {\n"
+        conf+="        try_files \$uri \$uri/ /index.html;\n"
         conf+="    }\n"
         conf+="}\n\n"
     done
