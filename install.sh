@@ -374,6 +374,20 @@ phase_write_env() {
     add_env "SSO_CLIENT_SECRET" ".keycloak.ssoClientSecret"
     add_env "SSO_PROVIDER_DISCOVERY_URI" ".keycloak.ssoDiscoveryUri"
 
+    # Keycloak — settings consumed by deploy_utils.py when provisioning
+    # CyberPanel servers.  Without these the remote .env gets wrong defaults.
+    add_env "KEYCLOAK_VERIFY_SSL" ".keycloak.verifySSL"
+    add_env_array "KEYCLOAK_ACCEPTED_AUDIENCES" ".keycloak.acceptedAudiences"
+    add_env "KEYCLOAK_PUBLIC_KEY" ".keycloak.publicKey"
+    add_env "AUTH_BACKEND" ".keycloak.authBackend"
+
+    # Fallback: ensure KEYCLOAK_VERIFY_SSL is always present (CyberPanel
+    # servers need SSL verification disabled when calling back to Keycloak
+    # over the internet with Let's Encrypt certs).
+    if ! grep -q '^KEYCLOAK_VERIFY_SSL=' "$env_file" 2>/dev/null; then
+        echo "KEYCLOAK_VERIFY_SSL=false" >> "$env_file"
+    fi
+
     # Email
     add_env "EMAIL_BACKEND" ".email.backend"
     add_env "EMAIL_HOST" ".email.host"
