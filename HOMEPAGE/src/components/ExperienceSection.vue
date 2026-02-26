@@ -45,6 +45,12 @@ const timeline = ref([
     year: '2025',
     title: 'HCOS: Global Launch',
     description: 'What started as a solo late-night project is now a sophisticated Multi-Tenant Cloud Billing solution serving hosting providers and e-commerce global leaders.'
+  },
+  {
+    year: '2025',
+    title: 'A Chance Encounter',
+    description: 'An unexpected meeting led to a partnership with a co-CEO who brings over 25 years of experience in business operations to the table. Andrea proposed a tenancy model to meet the needs of modern, progressive businesses.',
+    note: 'An idea that came from a now dear partner in life.'
   }
 ])
 
@@ -54,6 +60,14 @@ const achievements = ref([
   { icon: '💡', title: 'Experience', count: '15+ Yrs', description: 'Born from a decade of curiosity and hands-on industry support.' },
   { icon: '🚀', title: 'Deployment', count: 'Global', description: 'Empowering providers to automate billing and scale revenue.' }
 ])
+
+// Always-present hardcoded entry — not overridable via CMS
+const chanceEncounterEntry = {
+  year: '2025',
+  title: 'A Chance Encounter',
+  description: 'An unexpected meeting led to a partnership with a co-CEO who brings over 25 years of experience in business operations to the table. Andrea proposed a tenancy model to meet the needs of modern, progressive businesses.',
+  note: 'An idea that came from a now dear partner in life.'
+}
 
 const bannerTitle = ref('Born from Real Support Experience')
 const bannerSubtitle = ref("We didn't build HCOS in a vacuum. We built it while answering thousands of customer tickets, understanding exactly where existing billing solutions fail. We're here to provide the stability and security your business deserves.")
@@ -73,7 +87,7 @@ onMounted(async () => {
       // Update reactive refs with backend data
       if (data.section_title) sectionTitle.value = data.section_title
       if (data.section_subtitle) sectionSubtitle.value = data.section_subtitle
-      if (data.timeline && Array.isArray(data.timeline)) timeline.value = data.timeline
+      if (data.timeline && Array.isArray(data.timeline)) timeline.value = [...data.timeline, chanceEncounterEntry]
       if (data.achievements && Array.isArray(data.achievements)) achievements.value = data.achievements
       if (data.banner_title) bannerTitle.value = data.banner_title
       if (data.banner_subtitle) bannerSubtitle.value = data.banner_subtitle
@@ -121,6 +135,7 @@ onMounted(async () => {
                     <div class="text-2xl font-bold gradient-text mb-2">{{ item.year }}</div>
                     <h3 class="text-lg font-semibold text-white mb-2">{{ replaceHCOS(item.title) }}</h3>
                     <p class="text-sm leading-relaxed" style="color: hsl(215,20%,65%)">{{ replaceHCOS(item.description) }}</p>
+                    <p v-if="item.note" class="text-xs mt-3 italic" style="color: hsl(215,25%,55%)">♥ {{ item.note }}</p>
                   </div>
                 </div>
 
