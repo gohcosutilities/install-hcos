@@ -202,6 +202,7 @@ export interface DeploymentConfig {
     frontendDomains: string[]
     keycloakDomains: string[]
     homepageDomains: string[]
+    gohcosDomains: string[]
   }
 }
 
@@ -395,6 +396,7 @@ export function createDefaultConfig(): DeploymentConfig {
       frontendDomains: [],
       keycloakDomains: [],
       homepageDomains: [],
+      gohcosDomains: [],
     },
   }
 }

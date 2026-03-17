@@ -474,6 +474,10 @@ phase_write_env() {
     # Homepage domains (public marketing site — origin of unauthenticated POSTs)
     while IFS= read -r d; do [[ -n "$d" ]] && _cors_add "https://${d}"; done \
         < <(jq -r '.deployment.homepageDomains // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+        
+    # GohcosWeb domains 
+    while IFS= read -r d; do [[ -n "$d" ]] && _cors_add "https://${d}"; done \
+        < <(jq -r '.deployment.gohcosDomains // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
 
     # Root / apex domains
     while IFS= read -r d; do [[ -n "$d" ]] && _cors_add "https://${d}"; done \
@@ -829,6 +833,9 @@ phase_ensure_ssl() {
     
     local hp_count=$(jq '.deployment.homepageDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
     for ((i=0; i<hp_count; i++)); do all_domains+=("$(jq -r ".deployment.homepageDomains[$i]" "$CONFIG_FILE")"); done
+    
+    local gohcos_count=$(jq '.deployment.gohcosDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<gohcos_count; i++)); do all_domains+=("$(jq -r ".deployment.gohcosDomains[$i]" "$CONFIG_FILE")"); done
 
     local root_count=$(jq '.deployment.rootDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
     for ((i=0; i<root_count; i++)); do all_domains+=("$(jq -r ".deployment.rootDomains[$i].domain" "$CONFIG_FILE")"); done
@@ -918,6 +925,9 @@ phase_dns() {
     
     local hp_count=$(jq '.deployment.homepageDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
     for ((i=0; i<hp_count; i++)); do all_domains+=("$(jq -r ".deployment.homepageDomains[$i]" "$CONFIG_FILE")"); done
+    
+    local gohcos_count=$(jq '.deployment.gohcosDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<gohcos_count; i++)); do all_domains+=("$(jq -r ".deployment.gohcosDomains[$i]" "$CONFIG_FILE")"); done
 
     # Also add root domains themselves
     local root_count=$(jq '.deployment.rootDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
@@ -1124,6 +1134,27 @@ phase_nginx_config() {
         conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
         conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
         conf+="    root /var/www/homepage;\n"
+        conf+="    index index.html;\n"
+        conf+="    location / { try_files \$uri \$uri/ /index.html; }\n"
+        conf+="}\n\n"
+    done
+
+    # GohcosWeb / Hosting Homepage Domains
+    local gohcos_count=$(jq '.deployment.gohcosDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
+    for ((i=0; i<gohcos_count; i++)); do
+        local gh_domain rd
+        gh_domain=$(jq -r ".deployment.gohcosDomains[$i]" "$CONFIG_FILE")
+        if [[ -z "$gh_domain" || "$gh_domain" == "null" ]]; then continue; fi
+        rd=$(get_root_domain_for "$gh_domain")
+
+        conf+="server {\n"
+        conf+="    listen 443 ssl;\n"
+        conf+="    server_name ${gh_domain};\n"
+        conf+="    ssl_certificate /etc/letsencrypt/live/${rd}/fullchain.pem;\n"
+        conf+="    ssl_certificate_key /etc/letsencrypt/live/${rd}/privkey.pem;\n"
+        conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
+        conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
+        conf+="    root /var/www/gohcosweb;\n"
         conf+="    index index.html;\n"
         conf+="    location / { try_files \$uri \$uri/ /index.html; }\n"
         conf+="}\n\n"

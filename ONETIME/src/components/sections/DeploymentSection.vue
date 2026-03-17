@@ -126,7 +126,18 @@ store.detectIp()
       </div>
       <button type="button" class="btn-secondary" @click="addDomain(c.homepageDomains)">+ Add Homepage Domain</button>
     </div>
-
+    <!-- Gohcos / Hosting Homepage Domains -->
+    <div class="card">
+      <h3 class="card-title">Hosting Homepage Domains</h3>
+      <p class="card-desc">Domains that will proxy to the Gohcos / Hosting Homepage project (e.g., gohcos.com).</p>
+      <div v-for="(_, idx) in c.gohcosDomains" :key="'gh'+idx" class="fe-row">
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <TextInput v-model="c.gohcosDomains[idx]" placeholder="gohcos.com" style="flex: 1;" />
+          <button type="button" class="btn-remove" @click="removeDomain(c.gohcosDomains, idx)">×</button>
+        </div>
+      </div>
+      <button type="button" class="btn-secondary" @click="addDomain(c.gohcosDomains)">+ Add Hosting Homepage Domain</button>
+    </div>
     <!-- Repositories -->
     <div class="card">
       <h3 class="card-title">Repositories</h3>
@@ -146,6 +157,7 @@ store.detectIp()
             <option value="backend">Backend (Django)</option>
             <option value="frontend">Frontend (Vue3 Dashboard)</option>
             <option value="homepage">Homepage</option>
+            <option value="gohcos">Gohcos</option>
           </select>
         </div>
         <div class="field">
@@ -155,6 +167,7 @@ store.detectIp()
             <option value="onedash">onedash</option>
             <option value="homepage">homepage</option>
             <option value="demo">demo</option>
+            <option value="gohcosweb">gohcosweb</option>
           </select>
         </div>
       </div>
