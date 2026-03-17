@@ -1490,21 +1490,21 @@ phase_docker_up() {
     if [[ -d "$BASE_DIR/$frontend_dir" ]]; then
         update_status "docker_up" "Building frontend ($frontend_dir)..."
         cd "$BASE_DIR/$frontend_dir"
-        run_cmd "npm install && npm run build" "true"
+        run_cmd "docker run --rm -v \"$BASE_DIR/$frontend_dir\":/app -w /app node:20-alpine sh -c 'npm install && npm run build'" "true"
         cd "$BASE_DIR"
     fi
 
     if [[ -d "$BASE_DIR/$homepage_dir" ]]; then
         update_status "docker_up" "Building homepage ($homepage_dir)..."
         cd "$BASE_DIR/$homepage_dir"
-        run_cmd "npm install && npm run build" "true"
+        run_cmd "docker run --rm -v \"$BASE_DIR/$homepage_dir\":/app -w /app node:20-alpine sh -c 'npm install && npm run build'" "true"
         cd "$BASE_DIR"
     fi
 
     if [[ -d "$BASE_DIR/$gohcos_dir" ]]; then
         update_status "docker_up" "Building gohcosweb ($gohcos_dir)..."
         cd "$BASE_DIR/$gohcos_dir"
-        run_cmd "npm install && npm run build" "true"
+        run_cmd "docker run --rm -v \"$BASE_DIR/$gohcos_dir\":/app -w /app node:20-alpine sh -c 'npm install && npm run build'" "true"
         cd "$BASE_DIR"
     fi
 
