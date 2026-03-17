@@ -682,6 +682,21 @@ phase_clone_repos() {
                 rm -rf "$full_path"
                 mv "$tmp_dir" "$full_path"
             fi
+        elif [[ "$repo_type" == "gohcos" && ! -f "$full_path/package.json" && ! -f "$full_path/index.html" ]]; then
+            local inner=""
+            for candidate in "$full_path"/*/; do
+                if [[ -f "${candidate}package.json" || -f "${candidate}index.html" ]]; then
+                    inner="$candidate"
+                    break
+                fi
+            done
+            if [[ -n "$inner" ]]; then
+                update_status "cloning" "  Flattening nested gohcosweb: $(basename "$inner") → $folder"
+                local tmp_dir="${full_path}.__tmp_flatten"
+                mv "$inner" "$tmp_dir"
+                rm -rf "$full_path"
+                mv "$tmp_dir" "$full_path"
+            fi
         fi
     done
 
@@ -1212,10 +1227,11 @@ phase_nginx_config() {
 phase_docker_compose() {
     update_status "compose" "Phase 7: Generating docker-compose.yml..."
 
-    local backend_dir frontend_dir homepage_dir primary_kc_domain
+    local backend_dir frontend_dir homepage_dir gohcos_dir primary_kc_domain
     backend_dir=$(jq -r '.deployment.repositories[] | select(.type=="backend") | .folder // "BACKEND-API-HCOM"' "$CONFIG_FILE")
     frontend_dir=$(jq -r '.deployment.repositories[] | select(.type=="frontend") | .folder // "ONEDASH.HCOS.IO"' "$CONFIG_FILE")
     homepage_dir=$(jq -r '.deployment.repositories[] | select(.type=="homepage") | .folder // "HOMEPAGE"' "$CONFIG_FILE")
+    gohcos_dir=$(jq -r '.deployment.repositories[] | select(.type=="gohcos") | .folder // "GOHCOSWEB"' "$CONFIG_FILE")
     primary_kc_domain=$(jq -r '.deployment.keycloakDomains[0] // "keycloak.example.com"' "$CONFIG_FILE")
 
     cat > "$BASE_DIR/docker-compose.yml" <<COMPOSEEOF
@@ -1242,6 +1258,39 @@ services:
     container_name: redis
     networks:
       - hcos_network
+
+  cyberpanel_host:
+    image: almalinux:9.5
+    container_name: cyberpanel_alma
+    privileged: true
+    cgroup: host
+    entrypoint: ["/bin/bash", "/opt/cyberpanel-entrypoint.sh"]
+    ports:
+      - "8090:8090"
+      - "7080:7080"
+    environment:
+      - HOSTNAME_FOR_SSL=platform.hcos.io
+      - CLOUDFLARE_API_KEY=\${CLOUDFLARE_FULL_API_KEY}
+      - CLOUDFLARE_API_EMAIL=\${CLOUDFLARE_API_EMAIL}
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup
+      - cyberpanel_data:/var/www
+      - cyberpanel_app:/mnt/cyberpanel_persist
+      - cyberpanel_lsws:/usr/local/lsws
+      - cyberpanel_lscp:/usr/local/lscp
+      - cyberpanel_mysql:/var/lib/mysql
+      - cyberpanel_etc:/etc/cyberpanel
+      - cyberpanel_letsencrypt:/etc/letsencrypt
+      - ./${backend_dir}/CONTROL:/usr/local/CONTROL:ro
+      - ./cyberpanel-entrypoint.sh:/opt/cyberpanel-entrypoint.sh:ro
+    networks:
+      hcos_network:
+        aliases:
+          - platform.hcos.io
+    deploy:
+      resources:
+        limits:
+          memory: 3G
 
   keycloak:
     build:
@@ -1355,6 +1404,7 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - ./${frontend_dir}/dist:/var/www/onedash
       - ./${homepage_dir}/dist:/var/www/homepage
+      - ./${gohcos_dir}/dist:/var/www/gohcosweb
       - ./nginx/docker-entrypoint.sh:/docker-entrypoint.sh
     entrypoint: ["/docker-entrypoint.sh"]
     environment:
@@ -1374,6 +1424,13 @@ networks:
 volumes:
   postgres_data:
     driver: local
+  cyberpanel_data:
+  cyberpanel_app:
+  cyberpanel_lsws:
+  cyberpanel_lscp:
+  cyberpanel_mysql:
+  cyberpanel_etc:
+  cyberpanel_letsencrypt:
 COMPOSEEOF
 
     update_status "compose" "Phase 7: docker-compose.yml written"
@@ -1394,9 +1451,10 @@ phase_docker_up() {
     fi
 
     # Build frontend and homepage before starting docker
-    local frontend_dir homepage_dir
+    local frontend_dir homepage_dir gohcos_dir
     frontend_dir=$(jq -r '.deployment.repositories[] | select(.type=="frontend") | .folder // "ONEDASH.HCOS.IO"' "$CONFIG_FILE")
     homepage_dir=$(jq -r '.deployment.repositories[] | select(.type=="homepage") | .folder // "HOMEPAGE"' "$CONFIG_FILE")
+    gohcos_dir=$(jq -r '.deployment.repositories[] | select(.type=="gohcos") | .folder // "GOHCOSWEB"' "$CONFIG_FILE")
 
     if [[ -d "$BASE_DIR/$frontend_dir" ]]; then
         update_status "docker_up" "Building frontend ($frontend_dir)..."
@@ -1408,6 +1466,13 @@ phase_docker_up() {
     if [[ -d "$BASE_DIR/$homepage_dir" ]]; then
         update_status "docker_up" "Building homepage ($homepage_dir)..."
         cd "$BASE_DIR/$homepage_dir"
+        run_cmd "npm install && npm run build" "true"
+        cd "$BASE_DIR"
+    fi
+
+    if [[ -d "$BASE_DIR/$gohcos_dir" ]]; then
+        update_status "docker_up" "Building gohcosweb ($gohcos_dir)..."
+        cd "$BASE_DIR/$gohcos_dir"
         run_cmd "npm install && npm run build" "true"
         cd "$BASE_DIR"
     fi

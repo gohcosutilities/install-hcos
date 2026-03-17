@@ -21,7 +21,7 @@ get_frontend_domains() {
     echo -e "${YELLOW}=== Frontend Domains Setup ===${NC}"
     echo -e "${YELLOW}Enter frontend domains one at a time.${NC}"
     echo -e "${YELLOW}For each domain, specify which Vue3 container will serve it.${NC}"
-    echo -e "${YELLOW}Available Vue3 containers: onedash, homepage, demo${NC}"
+    echo -e "${YELLOW}Available Vue3 containers: onedash, homepage, demo, gohcosweb${NC}"
     echo -e "${YELLOW}Type 'done' when all frontend domains are entered.${NC}"
     echo ""
     
@@ -36,12 +36,12 @@ get_frontend_domains() {
         fi
         
         echo -e "${YELLOW}Which Vue3 container should serve $domain?${NC}"
-        echo "Options: onedash, homepage, demo"
+        echo "Options: onedash, homepage, demo, gohcosweb"
         read -p "Container name: " container
         
         # Validate container choice
-        if [[ "$container" != "onedash" && "$container" != "homepage" && "$container" != "demo" ]]; then
-            echo -e "${RED}Invalid container. Please choose: onedash, homepage, or demo${NC}"
+        if [[ "$container" != "onedash" && "$container" != "homepage" && "$container" != "demo" && "$container" != "gohcosweb" ]]; then
+            echo -e "${RED}Invalid container. Please choose: onedash, homepage, demo, or gohcosweb${NC}"
             continue
         fi
         
@@ -697,6 +697,9 @@ server {
             "demo")
                 ROOT="/var/www/demo"
                 ;;
+            "gohcosweb")
+                ROOT="/var/www/gohcosweb"
+                ;;
             *)
                 ROOT="/var/www/default"
                 ;;
@@ -936,10 +939,10 @@ clone_repositories() {
     }
 
     # Clone repositories (adjust these URLs as needed)
-    clone_repo "https://github.com/gohcosutilities/BACKEND-API" "BACKEND-API"
-    clone_repo "https://github.com/gohcosutilities/ONEDASH.HCOS.IO-BUILD" "ONEDASH.HCOS.IO-BUILD"
-    clone_repo "https://github.com/gohcosutilities/HOMEPAGE-BUILD" "HOMEPAGE-BUILD"
-    clone_repo "https://github.com/gohcosutilities/DEMONSTRATION-HOMEPAGE-BUILD" "DEMONSTRATION-HOMEPAGE-BUILD"
+    clone_repo "https://github.com/gohcosutilities/BACKEND-API-HCOM" "BACKEND-API-HCOM"
+    clone_repo "https://github.com/gohcosutilities/ONEDASH.HCOS.IO" "ONEDASH.HCOS.IO"
+    clone_repo "https://github.com/gohcosutilities/HOMEPAGE" "HOMEPAGE"
+    clone_repo "https://github.com/gohcosutilities/GOHCOSWEB" "GOHCOSWEB"
 }
 
 # Function to create docker-compose.yml
@@ -977,6 +980,39 @@ services:
     image: redis:alpine
     networks:
       - local
+
+  cyberpanel_host:
+    image: almalinux:9.5
+    container_name: cyberpanel_alma
+    privileged: true
+    cgroup: host
+    entrypoint: ["/bin/bash", "/opt/cyberpanel-entrypoint.sh"]
+    ports:
+      - "8090:8090"
+      - "7080:7080"
+    environment:
+      - HOSTNAME_FOR_SSL=platform.hcos.io
+      - CLOUDFLARE_API_KEY=\${CLOUDFLARE_FULL_API_KEY}
+      - CLOUDFLARE_API_EMAIL=\${CLOUDFLARE_API_EMAIL}
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup
+      - cyberpanel_data:/var/www
+      - cyberpanel_app:/mnt/cyberpanel_persist
+      - cyberpanel_lsws:/usr/local/lsws
+      - cyberpanel_lscp:/usr/local/lscp
+      - cyberpanel_mysql:/var/lib/mysql
+      - cyberpanel_etc:/etc/cyberpanel
+      - cyberpanel_letsencrypt:/etc/letsencrypt
+      - ./BACKEND-API-HCOM/CONTROL:/usr/local/CONTROL:ro
+      - ./cyberpanel-entrypoint.sh:/opt/cyberpanel-entrypoint.sh:ro
+    networks:
+      local:
+        aliases:
+          - platform.hcos.io
+    deploy:
+      resources:
+        limits:
+          memory: 3G
 
   keycloak:
     image: quay.io/keycloak/keycloak:23.0
@@ -1045,9 +1081,9 @@ services:
     volumes:
       - ./nginx-prod:/etc/nginx/conf.d
       - /etc/letsencrypt:/etc/letsencrypt:ro
-      - ./ONEDASH.HCOS.IO-BUILD:/var/www/onedash
-      - ./HOMEPAGE-BUILD:/var/www/homepage
-      - ./DEMONSTRATION-HOMEPAGE-BUILD:/var/www/demo
+      - ./ONEDASH.HCOS.IO/dist:/var/www/onedash
+      - ./HOMEPAGE/dist:/var/www/homepage
+      - ./GOHCOSWEB/dist:/var/www/gohcosweb
     depends_on:
       - backend
       - keycloak
@@ -1061,6 +1097,13 @@ networks:
 volumes:
   mariadb_data:
   postgres_data:
+  cyberpanel_data:
+  cyberpanel_app:
+  cyberpanel_lsws:
+  cyberpanel_lscp:
+  cyberpanel_mysql:
+  cyberpanel_etc:
+  cyberpanel_letsencrypt:
 EOF
     
     echo -e "${GREEN}✓ docker-compose.yml created${NC}"
