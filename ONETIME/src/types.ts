@@ -7,8 +7,8 @@ export interface Repository {
   url: string
   folder: string
   domain: string
-  type: 'backend' | 'frontend' | 'homepage'
-  container: 'backend' | 'onedash' | 'homepage' | 'demo'
+  type: 'backend' | 'frontend' | 'homepage' | 'gohcos'
+  container: 'backend' | 'onedash' | 'homepage' | 'gohcos' | 'demo'
 }
 
 export interface FrontendDomain {
@@ -370,25 +370,32 @@ export function createDefaultConfig(): DeploymentConfig {
       cloudflareApiToken: '',
       repositories: [
         {
-          url: 'https://github.com/gohcosutilities/HCOS-V8.0.git',
+          url: 'https://github.com/gohcosutilities/BACKEND-API-HCOM.git',
           folder: 'BACKEND-API-HCOM',
           domain: '',
           type: 'backend',
           container: 'backend',
         },
         {
-          url: 'https://github.com/gohcosutilities/HCOS-V8-FRONTEND.git',
+          url: 'https://github.com/gohcosutilities/ONEDASH.HCOS.IO.git',
           folder: 'ONEDASH.HCOS.IO',
           domain: '',
           type: 'frontend',
           container: 'onedash',
         },
         {
-          url: 'https://github.com/gohcosutilities/HCOS-V8-HOMEPAGE.git',
+          url: 'https://github.com/gohcosutilities/HOMEPAGE.git',
           folder: 'HOMEPAGE',
           domain: '',
           type: 'homepage',
           container: 'homepage',
+        },
+        {
+          url: 'https://github.com/gohcosutilities/GOHCOSWEB.git',
+          folder: 'GOHCOSWEB',
+          domain: '',
+          type: 'gohcos',
+          container: 'gohcos',
         },
       ],
       rootDomains: [],
