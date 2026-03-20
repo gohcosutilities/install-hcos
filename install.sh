@@ -1282,7 +1282,7 @@ services:
     extra_hosts:
       - "postgres.local:host-gateway"
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
 
   redis:
     image: redis:alpine
@@ -1342,7 +1342,7 @@ services:
       - KC_DB_USERNAME=\${BACKEND_USER:-hcos_db_admin}
       - KC_DB_PASSWORD=\${BACKEND_PASSWORD:-hcos_password}
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3001:3001"
     networks:
       - hcos_network
     depends_on:
@@ -1378,7 +1378,7 @@ services:
       - "internal.local:host-gateway"
       - "postgres.local:host-gateway"
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5000:5000"
 
   celery:
     build:
