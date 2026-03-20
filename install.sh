@@ -727,6 +727,12 @@ phase_clone_repos() {
         chmod +x "$BASE_DIR/init-multiple-databases.sh"
         update_status "cloning" "  Copied init-multiple-databases.sh"
     fi
+    # cyberpanel-entrypoint.sh
+    if [[ -f "$REPO_DIR/cyberpanel-entrypoint.sh" ]]; then
+        cp "$REPO_DIR/cyberpanel-entrypoint.sh" "$BASE_DIR/cyberpanel-entrypoint.sh"
+        chmod +x "$BASE_DIR/cyberpanel-entrypoint.sh"
+        update_status "cloning" "  Copied cyberpanel-entrypoint.sh"
+    fi
     # nginx config scaffolding (docker-entrypoint.sh, front.conf)
     mkdir -p "$BASE_DIR/nginx/templates"
     if [[ -d "$REPO_DIR/nginx" ]]; then
